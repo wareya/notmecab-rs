@@ -1,8 +1,8 @@
 notmecab-rs is a very basic mecab clone, designed only to do parsing, not training.
 
 This is meant to be used as a library by other tools such as frequency analyzers. Not directly by people.
-
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
+Support for unk.dic is currently unimplemented, so in rare situations, the parse might be different from mecab.
 
 Licensed under the Apache License, Version 2.0.
 
