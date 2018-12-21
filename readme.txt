@@ -6,15 +6,19 @@ It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF
 
 Licensed under the Apache License, Version 2.0.
 
-Example (from tests, edited):
+Testing:
 
-    let mut sysdic_raw = File::open("data/sys.dic").unwrap();
+Get unidic's sys.dic and matrix.bin and put them under a new folder next to src/ called data/. Then invoke tests from the repository root.
+
+Example (from tests):
+
+    let sysdic_raw = File::open("data/sys.dic").unwrap(); // you need to acquire a mecab dictionary and place its sys.dic file here manually
     let mut sysdic = BufReader::new(sysdic_raw);
     
-    let mut matrix_raw = File::open("data/matrix.bin").unwrap();
+    let matrix_raw = File::open("data/matrix.bin").unwrap(); // you need to acquire a mecab dictionary and place its matrix.bin file here manually
     let mut matrix = BufReader::new(matrix_raw);
     
-    let mut dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
+    let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
     
     let result = parse(&dict, &"これを持っていけ".to_string());
     
@@ -24,17 +28,9 @@ Example (from tests, edited):
         {
             println!("{}", token.feature);
         }
-        let mut first = true;
-        for token in &result.0
-        {
-            if !first
-            {
-                print!("｜");
-            }
-            print!("{}", token.surface);
-            first = false;
-        }
-        println!();
+        let split_up_string = tokenstream_to_string(&result.0, "|");
+        println!("{}", split_up_string);
+        assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
     }
 
 Output of example:
@@ -46,11 +42,7 @@ Output of example:
     動詞,非自立可能,*,*,五段-カ行,命令形,イク,行く,いけ,イケ,いく,イク,和,*,*,*,*,*,*,用,イケ,イク,イケ,イク,0,C2,*,470874478224161,1713
     これ｜を｜持っ｜て｜いけ
 
-You can also call parse_to_lexertoken, which doesn't do any string copying or allocations, but you don't get the feature string.
-
-Testing:
-
-Get unidic's sys.dic and matrix.bin and put them under a new folder next to src/ called data/. Then invoke tests from the repository root.
+You can also call parse_to_lexertoken, which less string allocation, but you don't get the feature string as a string, and you need to feed it chars, not a string.
 
 NOTE: This software is unusably slow if optimizations are disabled.
 
