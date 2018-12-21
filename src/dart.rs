@@ -36,7 +36,7 @@ fn check_valid_link(links : &[Link], from : u32, to : u32) -> Result<(), i32>
     {
         return Err(3);
     }
-    return Ok(());
+    Ok(())
 }
 
 fn check_valid_out(links : &[Link], from : u32, to : u32) -> Result<(), i32>
@@ -46,14 +46,14 @@ fn check_valid_out(links : &[Link], from : u32, to : u32) -> Result<(), i32>
         return Err(err);
     }
     // don't follow links to bases that aren't outputs
-    else if links[to as usize].base < 0x80000000
+    else if links[to as usize].base < 0x8000_0000
     {
         return Err(-1);
     }
-    return Ok(());
+    Ok(())
 }
 
-fn collect_links_hashmap(links : &[Link], base : u32, collection : &mut Vec<(String, u32)>, key : Vec<u8>)
+fn collect_links_hashmap(links : &[Link], base : u32, collection : &mut Vec<(String, u32)>, key : &[u8])
 {
     if check_valid_out(links, base, base).is_ok()
     {
@@ -66,9 +66,9 @@ fn collect_links_hashmap(links : &[Link], base : u32, collection : &mut Vec<(Str
     {
         if check_valid_link(links, base, base+1+i).is_ok()
         {
-            let mut newkey = key.clone();
+            let mut newkey = key.to_owned();
             newkey.push(i as u8);
-            collect_links_hashmap(links, links[(base+1+i) as usize].base, collection, newkey);
+            collect_links_hashmap(links, links[(base+1+i) as usize].base, collection, &newkey);
         }
     }
 }
@@ -131,7 +131,7 @@ fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken]) -> H
 pub (crate) fn collect_links_into_hashmap(links : &[Link], tokens : &[FormatToken]) -> HashMap<String, Vec<FormatToken>>
 {
     let mut collection : Vec<(String, u32)> = Vec::new();
-    collect_links_hashmap(&links, links[0].base, &mut collection, vec!());
+    collect_links_hashmap(&links, links[0].base, &mut collection, &[]);
     
     entries_to_tokens(collection, tokens)
 }

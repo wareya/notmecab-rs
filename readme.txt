@@ -4,6 +4,8 @@ This is meant to be used as a library by other tools such as frequency analyzers
 
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
 
+Licensed under the Apache License, Version 2.0.
+
 Example (from tests, edited):
 
     let mut sysdic_raw = File::open("data/sys.dic").unwrap();

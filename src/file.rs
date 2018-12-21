@@ -33,7 +33,7 @@ pub (crate) fn read_i16_buffer<T : Read>(f : &mut BufReader<T>, dst : &mut [i16]
 {
     match f.read_i16_into::<LE>(dst)
     {
-        Ok(val) => Ok(val),
+        Ok(_) => Ok(()),
         _ => Err("IO error")
     }
 }

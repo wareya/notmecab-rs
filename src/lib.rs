@@ -167,7 +167,7 @@ impl Dict {
     {
         // magic
         let magic = read_u32(sysdic)?;
-        if magic != 0xE1172181
+        if magic != 0xE1_17_21_81
         {
             return Err("not a mecab sys.dic file");
         }
@@ -233,10 +233,9 @@ impl Dict {
         //println!("double checking {}", feature_string_bytes.len());
         
         //println!("start reading feature table");
-        match sysdic.read_exact(&mut feature_string_bytes)
+        if sysdic.read_exact(&mut feature_string_bytes).is_err()
         {
-            Err(_) => { return Err("IO error") }
-            Ok(_) => { }
+            return Err("IO error")
         }
         //println!("end reading feature table");
         
@@ -329,11 +328,11 @@ impl Dict {
             * right.left_context as usize
         ];
         
-        return right.cost as i64 + connection_cost as i64;
+        right.cost as i64 + connection_cost as i64
     }
 }
 
-fn build_lattice(dict : &Dict, pseudo_string : &Vec<char>) -> (Vec<Vec<LexerToken>>, i64)
+fn build_lattice(dict : &Dict, pseudo_string : &[char]) -> (Vec<Vec<LexerToken>>, i64)
 {
     let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(pseudo_string.len());
     
@@ -371,7 +370,7 @@ fn build_lattice(dict : &Dict, pseudo_string : &Vec<char>) -> (Vec<Vec<LexerToke
             end += 1;
         }
         
-        if start == max_covered_index && lattice_column.len() == 0
+        if start == max_covered_index && lattice_column.is_empty()
         {
             lattice_column.push(LexerToken::make_unk(start+1, start+2));
         }
@@ -384,7 +383,7 @@ fn build_lattice(dict : &Dict, pseudo_string : &Vec<char>) -> (Vec<Vec<LexerToke
     (lattice, min_token_cost_ever)
 }
 
-pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &Vec<char>) -> Option<(Vec<LexerToken>, i64)>
+pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Vec<LexerToken>, i64)>
 {
     let (lattice, min_token_cost_ever) = build_lattice(dict, pseudo_string);
     
@@ -408,7 +407,7 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &Vec<char>) -> Option<
                     let right = &lattice[left.end][row];
                     ret.push(((left.end, row), dict.calculate_cost(left, right)));
                 }
-                return ret;
+                ret
             }
         },
         // heuristic
@@ -419,12 +418,11 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &Vec<char>) -> Option<
             if left.end < lattice.len()
             {
                 let distance = lattice.len() - left.end;
-                return distance as i64 * (dict.min_edge_cost_ever + min_token_cost_ever);
-                //return 0;
+                distance as i64 * (dict.min_edge_cost_ever + min_token_cost_ever)
             }
             else
             {
-                return std::i64::MAX;
+                std::i64::MAX
             }
         },
         // success
@@ -449,15 +447,15 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &Vec<char>) -> Option<
             }
         }
         
-        return Some((token_events, result.1));
+        Some((token_events, result.1))
     }
     else
     {
-        return None;
+        None
     }
 }
 
-pub fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
+pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
 {
     let pseudo_string = codepoints(text);
     
@@ -482,11 +480,11 @@ pub fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind == TokenType::UNK));
         }
         
-        return Some((lexeme_events, result.1));
+        Some((lexeme_events, result.1))
     }
     else
     {
-        return None;
+        None
     }
 }
 
@@ -510,7 +508,7 @@ mod tests {
             ret += &token.surface;
             first = false;
         }
-        return ret;
+        ret
     }
     
     #[test]
