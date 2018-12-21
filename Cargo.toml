@@ -1,0 +1,15 @@
+[package]
+name = "notmecab-rs"
+version = "0.1.0"
+authors = ["wareya <wareya@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+byteorder = "1.2"
+pathfinding = "1.1"
+
+[profile.bench]
+debug = 2
+
+[profile.test]
+opt-level = 3
