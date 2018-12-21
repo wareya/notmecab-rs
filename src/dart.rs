@@ -73,6 +73,8 @@ fn collect_links_hashmap(links : &[Link], base : u32, collection : &mut Vec<(Str
     }
 }
 
+// for supporting unk.dic in the future
+
 /*
 struct Range {
     start : char,
