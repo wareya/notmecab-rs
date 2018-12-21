@@ -54,6 +54,7 @@ impl FormatToken {
     }
 }
 
+#[derive(Clone)]
 #[derive(Debug)]
 #[derive(PartialEq)]
 enum TokenType {
@@ -62,8 +63,9 @@ enum TokenType {
     UNK
 }
 
+#[derive(Clone)]
 #[derive(Debug)]
-pub (crate) struct LexerToken {
+pub struct LexerToken {
     left_context : u16,
     right_context : u16,
     
@@ -127,7 +129,7 @@ impl LexerToken {
 }
 
 #[derive(Debug)]
-pub (crate) struct ParserToken {
+pub struct ParserToken {
     surface : String,
     feature : String,
     
@@ -148,7 +150,7 @@ impl ParserToken {
     }
 }
 
-struct Dict {
+pub struct Dict {
     dictionary : HashMap<String, Vec<FormatToken>>,
     contains_longer : HashSet<String>,
     feature_string_bytes : Vec<u8>,
@@ -161,7 +163,7 @@ struct Dict {
 }
 
 impl Dict {
-    fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
+    pub fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
     {
         let mut dictionary : HashMap<String, Vec<FormatToken>> = HashMap::new();
         let mut contains_longer : HashSet<String> = HashSet::new();
@@ -335,12 +337,8 @@ impl Dict {
     }
 }
 
-fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
+fn build_lattice(dict : &Dict, pseudo_string : &Vec<char>) -> (Vec<Vec<LexerToken>>, i64)
 {
-    let dummy_beginning : LexerToken;
-    
-    let pseudo_string = codepoints(text);
-    
     let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(pseudo_string.len());
     
     let mut max_covered_index = 0usize;
@@ -379,7 +377,6 @@ fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
         
         if start == max_covered_index && lattice_column.len() == 0
         {
-            panic!("asdf");
             lattice_column.push(LexerToken::make_unk(start+1, start+2));
         }
         
@@ -387,6 +384,13 @@ fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
     }
     
     lattice.push(vec!(LexerToken::make_bos(lattice.len(), lattice.len()+1)));
+    
+    (lattice, min_token_cost_ever)
+}
+
+pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &Vec<char>) -> Option<(Vec<LexerToken>, i64)>
+{
+    let (lattice, min_token_cost_ever) = build_lattice(dict, pseudo_string);
     
     let result = astar(
         // start
@@ -438,25 +442,48 @@ fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let mut lexeme_events : Vec<ParserToken> = Vec::new();
+        let mut token_events : Vec<LexerToken> = Vec::new();
         
         for event in result.0
         {
             let token = &lattice[event.0][event.1];
             if token.kind != TokenType::BOS
             {
-                let surface : String = pseudo_string[token.start-1..token.end-1].iter().collect();
-                let feature =
-                if token.kind == TokenType::Normal
-                {
-                    read_str_buffer(&dict.feature_string_bytes[token.feature_offset as usize..]).unwrap()
-                }
-                else
-                {
-                    "UNK".to_string()
-                };
-                lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind == TokenType::UNK));
+                token_events.push(token.clone());
             }
+        }
+        
+        return Some((token_events, result.1));
+    }
+    else
+    {
+        return None;
+    }
+}
+
+pub fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
+{
+    let pseudo_string = codepoints(text);
+    
+    let result = parse_to_lexertokens(dict, &pseudo_string);
+    // convert result into callee-usable vector of parse tokens, tupled together with cost
+    if let Some(result) = result
+    {
+        let mut lexeme_events : Vec<ParserToken> = Vec::new();
+        
+        for token in result.0
+        {
+            let surface : String = pseudo_string[token.start-1..token.end-1].iter().collect();
+            let feature =
+            if token.kind == TokenType::Normal
+            {
+                read_str_buffer(&dict.feature_string_bytes[token.feature_offset as usize..]).unwrap()
+            }
+            else
+            {
+                "UNK".to_string()
+            };
+            lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind == TokenType::UNK));
         }
         
         return Some((lexeme_events, result.1));
@@ -480,9 +507,8 @@ mod tests {
         
         let mut dict = super::Dict::load(&mut sysdic, &mut matrix).unwrap();
         
-        //let result = super::parse(&dict, &"これを持って行け".to_string());
         let result = super::parse(&dict, &"これを持っていけ".to_string());
-        //println!("{:?}", result);
+        
         if let Some(result) = result
         {
             for token in &result.0
