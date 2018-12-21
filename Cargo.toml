@@ -1,5 +1,5 @@
 [package]
-name = "notmecab-rs"
+name = "notmecab"
 version = "0.1.0"
 authors = ["wareya <wareya@gmail.com>"]
 edition = "2018"
