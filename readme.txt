@@ -44,7 +44,7 @@ Output of example:
     動詞,非自立可能,*,*,五段-カ行,命令形,イク,行く,いけ,イケ,いく,イク,和,*,*,*,*,*,*,用,イケ,イク,イケ,イク,0,C2,*,470874478224161,1713
     これ｜を｜持っ｜て｜いけ
 
-You can 
+You can also call parse_to_lexertoken, which doesn't do any string copying or allocations, but you don't get the feature string.
 
 Testing:
 

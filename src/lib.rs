@@ -69,7 +69,7 @@ pub struct LexerToken {
     left_context : u16,
     right_context : u16,
     
-    pos : u16,
+    pos  : u16,
     cost : i16,
     
     original_id : u32,
