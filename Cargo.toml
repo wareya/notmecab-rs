@@ -8,12 +8,20 @@ exclude = [
     "data/*",
 ]
 
+description = "Library for tokenizing text with mecab dictionaries. Not a mecab wrapper."
+license = "Apache-2.0"
+
+[lib]
+doc = true
+
 [dependencies]
 byteorder = "1.2"
 pathfinding = "1.1"
 
 [profile.bench]
 debug = 2
+overflow-checks = true 
 
 [profile.test]
 opt-level = 3
+overflow-checks = true 

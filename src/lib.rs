@@ -47,7 +47,6 @@ impl FormatToken {
         
         // seek away a u32 of padding
         seek_rel_4(sysdic)?;
-        //seek_rel(sysdic, 4);
         
         Ok(ret)
     }
@@ -56,29 +55,50 @@ impl FormatToken {
 #[derive(Clone)]
 #[derive(Debug)]
 #[derive(PartialEq)]
-enum TokenType {
+pub enum TokenType {
+    /// Token came from mecab dictionary.
     Normal,
+    /// Used internally for virtual beginning-of-string and end-of-string tokens.
     BOS,
+    /// Unknown character or characters. Could not be matched to a mecab dictionary entry at all.
+    ///
+    /// Note: notmecab handles UNK tokens slightly differently from how mecab does.
+    ///
+    /// This differnce in behavior is considered a bug.
     UNK
 }
 
 #[derive(Clone)]
 #[derive(Debug)]
 pub struct LexerToken {
-    left_context : u16,
-    right_context : u16,
+    /// Used internally during lattice pathfinding.
+    pub left_context : u16,
+    /// Used internally during lattice pathfinding.
+    pub right_context : u16,
     
-    pos  : u16,
-    cost : i16,
+    /// I don't know what this is.
+    pub pos  : u16,
+    /// Used internally during lattice pathfinding.
+    pub cost : i16,
     
-    original_id : u32,
+    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
+    pub original_id : u32,
     
-    feature_offset : u32,
+    /// Feed this to read_feature_string to get this token's "feature" string.
+    ///
+    /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
+    ///
+    /// The exact format of the feature string is dictionary-specific.
+    pub feature_offset : u32,
     
-    start : usize, // in codepoints
-    end   : usize, // in codepoints
-    
-    kind : TokenType,
+    /// Location, in codepoints, of the surface of this LexerToken in the string it was parsed from.
+    pub start : usize, 
+    /// Corresponding ending location, in codepoints. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one codepoint long)
+    pub end   : usize,
+    /// Origin of token. BOS and UNK are virtual origins ("beginning/ending-of-string" and "unknown", respectively). Normal means it came from the mecab dictionary.
+    ///
+    /// The BOS (beginning/ending-of-string) tokens are stripped away in parse_to_lexertokens.
+    pub kind : TokenType,
 }
 
 impl LexerToken {
@@ -127,14 +147,23 @@ impl LexerToken {
     }
 }
 
+#[derive(Clone)]
 #[derive(Debug)]
 pub struct ParserToken {
-    surface : String,
-    feature : String,
-    
-    original_id : u32,
-    
-    unknown : bool,
+    /// Exact sequence of characters with which this token appeared in the string that was parsed.
+    pub surface : String,
+    /// Description of this token's features.
+    ///
+    /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
+    ///
+    /// The exact format of the feature string is dictionary-specific.
+    pub feature : String,
+    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
+    pub original_id : u32,
+    /// Whether this token is known in the mecab dictionary or not.
+    ///
+    /// A value of true means that the character or characters under this token could not be parsed as part of any words in context.
+    pub unknown : bool,
 }
 
 impl ParserToken {
@@ -152,8 +181,8 @@ impl ParserToken {
 pub struct Dict {
     dictionary : HashMap<String, Vec<FormatToken>>,
     contains_longer : HashSet<String>,
-    // when using parse_to_lexertokens you need to be able to access the feature string table directly, so it's public
-    pub feature_string_bytes : Vec<u8>,
+    
+    feature_string_bytes : Vec<u8>, // used to get feature strings when using parse_to_lexertokens
     
     min_edge_cost_ever : i64,
 
@@ -163,6 +192,13 @@ pub struct Dict {
 }
 
 impl Dict {
+    /// Load sys.dic and matrix.bin files into memory and prepare the data that's stored in them to be used by the parser.
+    ///
+    /// Returns a Dict or, on error, a string describing an error that prevented the Dict from being created.
+    ///
+    /// Only supports UTF-8 mecab dictionaries with a version number of 0x66.
+    ///
+    /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
     pub fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
     {
         // magic
@@ -295,6 +331,17 @@ impl Dict {
           connection_matrix,
         })
     }
+    /// Takes an offset into an internal byte table that stores feature strings, returns the feature string starting at that offset.
+    ///
+    /// This is the way that feature strings are stored internally in mecab dictionaries, and decoding them all on load time would slow down loading dramatically.
+    ///
+    /// Does not check that the given offset is ACTUALLY the start of a feature string, so if you give an offset half way into a feature string, you'll get the tail end of that feature string.
+    ///
+    /// You should only feed this function the feature_offset field of a LexerToken.
+    pub fn read_feature_string(&self, feature_offset : u32) -> Result<String, &'static str>
+    {
+        read_str_buffer(&self.feature_string_bytes[feature_offset as usize..])
+    }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
         if left.end != right.start
@@ -383,6 +430,13 @@ fn build_lattice(dict : &Dict, pseudo_string : &[char]) -> (Vec<Vec<LexerToken>>
     (lattice, min_token_cost_ever)
 }
 
+/// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
+///
+/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
+///
+/// Returns a vector listing the LexerTokens on the chosen path and the cost the path took. Cost can be negative.
+///
+/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Vec<LexerToken>, i64)>
 {
     let (lattice, min_token_cost_ever) = build_lattice(dict, pseudo_string);
@@ -422,7 +476,7 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Ve
             }
             else
             {
-                std::i64::MAX
+                0
             }
         },
         // success
@@ -455,6 +509,13 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Ve
     }
 }
 
+/// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
+///
+/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
+/// 
+/// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
+/// 
+/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
 {
     let pseudo_string = codepoints(text);
@@ -471,7 +532,7 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
             let feature =
             if token.kind == TokenType::Normal
             {
-                read_str_buffer(&dict.feature_string_bytes[token.feature_offset as usize..]).unwrap()
+                dict.read_feature_string(token.feature_offset).unwrap()
             }
             else
             {
