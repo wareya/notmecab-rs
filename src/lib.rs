@@ -89,6 +89,8 @@ pub struct LexerToken {
     /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
     ///
     /// The exact format of the feature string is dictionary-specific.
+    ///
+    /// feature_offset is currently !0u32 (i.e. 0xFFFFFFFF) for tokens of the kind TokenType::UNK. Feeding this value to read_feature_string will result in a blank string, not an error.
     pub feature_offset : u32,
     
     /// Location, in codepoints, of the surface of this LexerToken in the string it was parsed from.
@@ -340,7 +342,14 @@ impl Dict {
     /// You should only feed this function the feature_offset field of a LexerToken.
     pub fn read_feature_string(&self, feature_offset : u32) -> Result<String, &'static str>
     {
-        read_str_buffer(&self.feature_string_bytes[feature_offset as usize..])
+        if (feature_offset as usize) < self.feature_string_bytes.len()
+        {
+            read_str_buffer(&self.feature_string_bytes[feature_offset as usize..])
+        }
+        else
+        {
+            Ok("".to_string())
+        }
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
