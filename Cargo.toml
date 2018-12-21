@@ -13,6 +13,10 @@ license = "Apache-2.0"
 
 repository = "https://github.com/wareya/notmecab-rs"
 
+categories = ["text-processing","science"]
+
+readme = "readme.txt"
+
 [lib]
 doc = true
 
