@@ -575,10 +575,10 @@ mod tests {
     #[test]
     fn test_general()
     {
-        let sysdic_raw = File::open("data/sys.dic").unwrap();
+        let sysdic_raw = File::open("data/sys.dic").unwrap(); // you need to acquire a mecab dictionary and place its sys.dic file here manually
         let mut sysdic = BufReader::new(sysdic_raw);
         
-        let matrix_raw = File::open("data/matrix.bin").unwrap();
+        let matrix_raw = File::open("data/matrix.bin").unwrap(); // you need to acquire a mecab dictionary and place its matrix.bin file here manually
         let mut matrix = BufReader::new(matrix_raw);
         
         let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
@@ -593,7 +593,7 @@ mod tests {
             }
             let split_up_string = tokenstream_to_string(&result.0, "|");
             println!("{}", split_up_string);
-            assert_eq!(split_up_string, "これ|を|持っ|て|いけ");
+            assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
         }
     }
 }
