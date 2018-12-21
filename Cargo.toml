@@ -1,6 +1,6 @@
 [package]
 name = "notmecab"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["wareya <wareya@gmail.com>"]
 edition = "2018"
 exclude = [
@@ -15,7 +15,7 @@ repository = "https://github.com/wareya/notmecab-rs"
 
 categories = ["text-processing","science"]
 
-readme = "readme.txt"
+readme = "readme.md"
 
 [lib]
 doc = true
