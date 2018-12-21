@@ -26,7 +26,7 @@ pub (crate) struct FormatToken {
     left_context : u16,
     right_context : u16,
     
-    pos : u16,
+    pos  : u16,
     cost : i16,
     
     original_id : u32,
@@ -208,10 +208,7 @@ impl Dict {
         }
         // 0x20
         let featurebytes = read_u32(sysdic)?; // number of bytes used to store the feature string pile
-        //println!("at {}", seek_rel(sysdic, 0).unwrap());
         seek_rel_4(sysdic)?;
-        //seek_rel(sysdic, 4)?;
-        //println!("at {}", seek_rel(sysdic, 0).unwrap());
         
         let encoding = read_nstr(sysdic, 0x20)?;
         if encoding != "UTF-8"
@@ -219,47 +216,47 @@ impl Dict {
             return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
         }
         
-        println!("start reading link table");
+        //println!("start reading link table");
         let mut links : Vec<Link> = Vec::with_capacity((linkbytes/8) as usize);
         for i in 0..(linkbytes/8)
         {
             links.push(Link::read(sysdic)?);
         }
-        println!("end reading link table");
+        //println!("end reading link table");
         
         let mut tokens : Vec<FormatToken> = Vec::with_capacity((tokenbytes/16) as usize);
-        println!("start reading tokens");
+        //println!("start reading tokens");
         for i in 0..(tokenbytes/16)
         {
             tokens.push(FormatToken::read(sysdic, tokens.len() as u32)?);
         }
-        println!("end reading tokens");
+        //println!("end reading tokens");
         
         //println!("feature table starts at {}", seek_rel(sysdic, 0).unwrap());
-        println!("going to read {} bytes", featurebytes);
+        //println!("going to read {} bytes", featurebytes);
         
         let mut feature_string_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
         feature_string_bytes.resize(featurebytes as usize, 0);
-        println!("double checking {}", feature_string_bytes.len());
+        //println!("double checking {}", feature_string_bytes.len());
         
-        println!("start reading feature table");
+        //println!("start reading feature table");
         match sysdic.read_exact(&mut feature_string_bytes)
         {
             Err(_) => { return Err("IO error") }
             Ok(n) => { }
         }
-        println!("end reading feature table");
+        //println!("end reading feature table");
         
-        println!("ended on {}", seek_rel(sysdic, 0).unwrap());
+        //println!("ended on {}", seek_rel(sysdic, 0).unwrap());
         
-        println!("start collecting dictionary");
+        //println!("start collecting dictionary");
         let dictionary = dart::collect_links_into_hashmap(&links, &tokens, &feature_string_bytes);
         drop(links);
-        println!("end collecting dictionary");
+        //println!("end collecting dictionary");
         
         let mut contains_longer : HashSet<String> = HashSet::new();
         
-        println!("start building prefix set");
+        //println!("start building prefix set");
         for entry in dictionary.keys()
         {
             let codepoints = codepoints(entry);
@@ -268,9 +265,9 @@ impl Dict {
                 contains_longer.insert(codepoints[0..i].iter().collect());
             }
         }
-        println!("end building prefix set");
+        //println!("end building prefix set");
         
-        println!("start reading matrix");
+        //println!("start reading matrix");
         let left_edges = read_u16(matrix)?;
         let right_edges = read_u16(matrix)?;
         let connections = left_edges as u32 * right_edges as u32;
@@ -278,15 +275,15 @@ impl Dict {
         let mut connection_matrix : Vec<i16> = Vec::with_capacity(connections as usize);
         connection_matrix.resize(connections as usize, 0);
         read_i16_buffer(matrix, &mut connection_matrix)?;
-        println!("end reading matrix");
+        //println!("end reading matrix");
         
-        println!("start preparing heuristic");
+        //println!("start preparing heuristic");
         let mut min_edge_cost_ever : i64 = 0;
         for edge_cost in &connection_matrix
         {
             min_edge_cost_ever = std::cmp::min(min_edge_cost_ever, *edge_cost as i64);
         }
-        println!("end preparing heuristic");
+        //println!("end preparing heuristic");
         
         Ok(Dict
         { dictionary,
@@ -496,6 +493,24 @@ pub fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
 
 #[cfg(test)]
 mod tests {
+    
+    fn tokenstream_to_string(stream : &Vec<super::ParserToken>, comma : &str) -> String
+    {
+        let mut ret = String::new();
+        
+        let mut first = true;
+        for token in stream
+        {
+            if !first
+            {
+                ret += comma;
+            }
+            ret += &token.surface;
+            first = false;
+        }
+        return ret;
+    }
+    
     #[test]
     fn test_general()
     {
@@ -515,17 +530,9 @@ mod tests {
             {
                 println!("{}", token.feature);
             }
-            let mut first = true;
-            for token in &result.0
-            {
-                if !first
-                {
-                    print!("｜");
-                }
-                print!("{}", token.surface);
-                first = false;
-            }
-            println!();
+            let split_up_string = tokenstream_to_string(&result.0, "|");
+            println!("{}", split_up_string);
+            assert_eq!(split_up_string, "これ|を|持っ|て|いけ");
         }
     }
 }
