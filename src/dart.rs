@@ -109,7 +109,7 @@ fn collect_links_ranges(links : &[Link], base : u32, ranges : &mut Vec<Range>, k
 }
 */
 
-fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken], feature_string_bytes : &[u8]) -> HashMap<String, Vec<FormatToken>>
+fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken]) -> HashMap<String, Vec<FormatToken>>
 {
     let mut dictionary : HashMap<String, Vec<FormatToken>> = HashMap::new();
     for entry in entries
@@ -128,10 +128,10 @@ fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken], feat
     dictionary
 }
 
-pub (crate) fn collect_links_into_hashmap(links : &[Link], tokens : &[FormatToken], feature_string_bytes : &[u8]) -> HashMap<String, Vec<FormatToken>>
+pub (crate) fn collect_links_into_hashmap(links : &[Link], tokens : &[FormatToken]) -> HashMap<String, Vec<FormatToken>>
 {
     let mut collection : Vec<(String, u32)> = Vec::new();
     collect_links_hashmap(&links, links[0].base, &mut collection, vec!());
     
-    entries_to_tokens(collection, tokens, feature_string_bytes)
+    entries_to_tokens(collection, tokens)
 }

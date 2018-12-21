@@ -1,6 +1,4 @@
 use std::io::BufReader;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::io::Read;
 
 extern crate byteorder;
@@ -31,25 +29,9 @@ pub (crate) fn read_u32<T : Read>(f : &mut BufReader<T>) -> Result<u32, &'static
     }
 }
 
-pub (crate) fn read_u8_buffer<T : Read>(f : &mut BufReader<T>, dst : &mut [u8]) -> Result<(), &'static str>
-{
-    match f.read_exact(dst)
-    {
-        Ok(val) => Ok(val),
-        _ => Err("IO error")
-    }
-}
 pub (crate) fn read_i16_buffer<T : Read>(f : &mut BufReader<T>, dst : &mut [i16]) -> Result<(), &'static str>
 {
     match f.read_i16_into::<LE>(dst)
-    {
-        Ok(val) => Ok(val),
-        _ => Err("IO error")
-    }
-}
-pub (crate) fn read_i32_buffer<T : Read>(f : &mut BufReader<T>, dst : &mut [i32]) -> Result<(), &'static str>
-{
-    match f.read_i32_into::<LE>(dst)
     {
         Ok(val) => Ok(val),
         _ => Err("IO error")
@@ -102,7 +84,6 @@ pub (crate) fn read_str_buffer(buf : &[u8]) -> Result<String, &'static str>
     }
 }
 
-
 // this is way, WAY faster than seeking 4 bytes forward explicitly.
 pub (crate) fn seek_rel_4<T : Read>(f : &mut BufReader<T>) -> Result<(), &'static str>
 {
@@ -114,41 +95,6 @@ pub (crate) fn seek_rel_4<T : Read>(f : &mut BufReader<T>) -> Result<(), &'stati
         _ => Err("IO error")
     }
 }
-
-pub (crate) fn seek_abs<T : Seek>(f : &mut T, n : usize) -> Result<u64, &'static str>
-{
-    match f.seek(SeekFrom::Start(n as u64))
-    {
-        Ok(n) => Ok(n),
-        _ => Err("IO error")
-    }
-}
-pub (crate) fn seek_rel<T : Seek>(f : &mut T, n : isize) -> Result<u64, &'static str>
-{
-    match f.seek(SeekFrom::Current(n as i64))
-    {
-        Ok(n) => Ok(n),
-        _ => Err("IO error")
-    }
-}
-pub (crate) fn seek_end<T : Seek>(f : &mut T, n : isize) -> Result<u64, &'static str>
-{
-    match f.seek(SeekFrom::End(n as i64))
-    {
-        Ok(n) => Ok(n),
-        _ => Err("IO error")
-    }
-}
-
-pub (crate) fn fsize<T : Seek>(f : &mut T) -> Result<u64, &'static str>
-{
-    let start = seek_rel(f, 0)?;
-    let size = seek_end(f, 0)?;
-    seek_abs(f, start as usize)?;
-    Ok(size)
-}
-
-
 
 #[cfg(test)]
 mod tests {

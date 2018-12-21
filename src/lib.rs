@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
@@ -153,7 +152,8 @@ impl ParserToken {
 pub struct Dict {
     dictionary : HashMap<String, Vec<FormatToken>>,
     contains_longer : HashSet<String>,
-    feature_string_bytes : Vec<u8>,
+    // when using parse_to_lexertokens you need to be able to access the feature string table directly, so it's public
+    pub feature_string_bytes : Vec<u8>,
     
     min_edge_cost_ever : i64,
 
@@ -165,13 +165,6 @@ pub struct Dict {
 impl Dict {
     pub fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
     {
-        let mut dictionary : HashMap<String, Vec<FormatToken>> = HashMap::new();
-        let mut contains_longer : HashSet<String> = HashSet::new();
-        
-        let mut left_edges  = 0u32;
-        let mut right_edges = 0u32;
-        let mut connection_matrix : Vec<u16> = Vec::new();
-        
         // magic
         let magic = read_u32(sysdic)?;
         if magic != 0xE1172181
@@ -189,11 +182,11 @@ impl Dict {
         // 0x08
         seek_rel_4(sysdic)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
         
-        let num_tokens = read_u32(sysdic)?; // number of unique recognizable lexemes / number of token information entries
+        let _num_unknown = read_u32(sysdic)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
         // 0x10
         // this information is duplicated in the matrix file and we will ensure that it is consistent
-        let num_sysdic_left_contexts = read_u32(sysdic)?;
-        let num_right_contexts = read_u32(sysdic)?;
+        let num_sysdic_left_contexts  = read_u32(sysdic)?;
+        let num_sysdic_right_contexts = read_u32(sysdic)?;
         
         // 0x18
         let linkbytes = read_u32(sysdic)?; // number of bytes used to store the dual-array trie
@@ -218,7 +211,7 @@ impl Dict {
         
         //println!("start reading link table");
         let mut links : Vec<Link> = Vec::with_capacity((linkbytes/8) as usize);
-        for i in 0..(linkbytes/8)
+        for _i in 0..(linkbytes/8)
         {
             links.push(Link::read(sysdic)?);
         }
@@ -226,7 +219,7 @@ impl Dict {
         
         let mut tokens : Vec<FormatToken> = Vec::with_capacity((tokenbytes/16) as usize);
         //println!("start reading tokens");
-        for i in 0..(tokenbytes/16)
+        for _i in 0..(tokenbytes/16)
         {
             tokens.push(FormatToken::read(sysdic, tokens.len() as u32)?);
         }
@@ -243,14 +236,14 @@ impl Dict {
         match sysdic.read_exact(&mut feature_string_bytes)
         {
             Err(_) => { return Err("IO error") }
-            Ok(n) => { }
+            Ok(_) => { }
         }
         //println!("end reading feature table");
         
         //println!("ended on {}", seek_rel(sysdic, 0).unwrap());
         
         //println!("start collecting dictionary");
-        let dictionary = dart::collect_links_into_hashmap(&links, &tokens, &feature_string_bytes);
+        let dictionary = dart::collect_links_into_hashmap(&links, &tokens);
         drop(links);
         //println!("end collecting dictionary");
         
@@ -268,8 +261,14 @@ impl Dict {
         //println!("end building prefix set");
         
         //println!("start reading matrix");
-        let left_edges = read_u16(matrix)?;
+        let left_edges  = read_u16(matrix)?;
         let right_edges = read_u16(matrix)?;
+        
+        if num_sysdic_left_contexts != left_edges as u32 || num_sysdic_right_contexts != right_edges as u32
+        {
+            return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
+        }
+        
         let connections = left_edges as u32 * right_edges as u32;
         
         let mut connection_matrix : Vec<i16> = Vec::with_capacity(connections as usize);
@@ -493,8 +492,11 @@ pub fn parse(dict : &Dict, text : &String) -> Option<(Vec<ParserToken>, i64)>
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use super::*;
     
-    fn tokenstream_to_string(stream : &Vec<super::ParserToken>, comma : &str) -> String
+    // concatenate surface forms of parsertoken stream, with given comma between tokens
+    fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
     {
         let mut ret = String::new();
         
@@ -514,15 +516,15 @@ mod tests {
     #[test]
     fn test_general()
     {
-        let mut sysdic_raw = super::File::open("data/sys.dic").unwrap();
-        let mut sysdic = super::BufReader::new(sysdic_raw);
+        let sysdic_raw = File::open("data/sys.dic").unwrap();
+        let mut sysdic = BufReader::new(sysdic_raw);
         
-        let mut matrix_raw = super::File::open("data/matrix.bin").unwrap();
-        let mut matrix = super::BufReader::new(matrix_raw);
+        let matrix_raw = File::open("data/matrix.bin").unwrap();
+        let mut matrix = BufReader::new(matrix_raw);
         
-        let mut dict = super::Dict::load(&mut sysdic, &mut matrix).unwrap();
+        let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
         
-        let result = super::parse(&dict, &"これを持っていけ".to_string());
+        let result = parse(&dict, &"これを持っていけ".to_string());
         
         if let Some(result) = result
         {
