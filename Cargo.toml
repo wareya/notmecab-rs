@@ -11,6 +11,8 @@ exclude = [
 description = "Library for tokenizing text with mecab dictionaries. Not a mecab wrapper."
 license = "Apache-2.0"
 
+repository = "https://github.com/wareya/notmecab-rs"
+
 [lib]
 doc = true
 
