@@ -14,10 +14,11 @@ use pathfinding::directed::astar::astar;
 mod strings;
 mod file;
 mod dart;
+mod etc;
 
 use self::file::*;
-use self::dart::Link;
 use self::strings::*;
+use self::etc::load_char_bin;
 
 #[derive(Clone)]
 #[derive(Debug)]
@@ -62,9 +63,9 @@ pub enum TokenType {
     BOS,
     /// Unknown character or characters. Could not be matched to a mecab dictionary entry at all.
     ///
-    /// Note: notmecab handles UNK tokens slightly differently from how mecab does.
+    /// Note: notmecab handles UNK tokens differently from how mecab does. The unknown dictionary is not implemented.
     ///
-    /// This differnce in behavior is considered a bug.
+    /// This difference in behavior was previously considered a bug, but it is not considered a bug anymore.
     UNK
 }
 
@@ -203,101 +204,33 @@ impl Dict {
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
     pub fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
     {
-        // magic
-        let magic = read_u32(sysdic)?;
-        if magic != 0xE1_17_21_81
-        {
-            return Err("not a mecab sys.dic file");
-        }
-        
-        // 0x04
-        let version = read_u32(sysdic)?;
-        if version != 0x66
-        {
-            return Err("unsupported version");
-        }
-    
-        // 0x08
-        seek_rel_4(sysdic)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
-        
-        let _num_unknown = read_u32(sysdic)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
-        // 0x10
-        // this information is duplicated in the matrix file and we will ensure that it is consistent
-        let num_sysdic_left_contexts  = read_u32(sysdic)?;
-        let num_sysdic_right_contexts = read_u32(sysdic)?;
-        
-        // 0x18
-        let linkbytes = read_u32(sysdic)?; // number of bytes used to store the dual-array trie
-        if linkbytes%8 != 0
-        {
-            return Err("dictionary broken: link table stored with number of bytes that is not a multiple of 8");
-        }
-        let tokenbytes = read_u32(sysdic)?; // number of bytes used to store the list of tokens
-        if tokenbytes%16 != 0
-        {
-            return Err("dictionary broken: token table stored with number of bytes that is not a multiple of 16");
-        }
-        // 0x20
-        let featurebytes = read_u32(sysdic)?; // number of bytes used to store the feature string pile
-        seek_rel_4(sysdic)?;
-        
-        let encoding = read_nstr(sysdic, 0x20)?;
-        if encoding != "UTF-8"
-        {
-            return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
-        }
-        
-        //println!("start reading link table");
-        let mut links : Vec<Link> = Vec::with_capacity((linkbytes/8) as usize);
-        for _i in 0..(linkbytes/8)
-        {
-            links.push(Link::read(sysdic)?);
-        }
-        //println!("end reading link table");
-        
-        let mut tokens : Vec<FormatToken> = Vec::with_capacity((tokenbytes/16) as usize);
-        //println!("start reading tokens");
-        for _i in 0..(tokenbytes/16)
-        {
-            tokens.push(FormatToken::read(sysdic, tokens.len() as u32)?);
-        }
-        //println!("end reading tokens");
-        
-        //println!("feature table starts at {}", seek_rel(sysdic, 0).unwrap());
-        //println!("going to read {} bytes", featurebytes);
-        
-        let mut feature_string_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
-        feature_string_bytes.resize(featurebytes as usize, 0);
-        //println!("double checking {}", feature_string_bytes.len());
-        
-        //println!("start reading feature table");
-        if sysdic.read_exact(&mut feature_string_bytes).is_err()
-        {
-            return Err("IO error")
-        }
-        //println!("end reading feature table");
-        
-        //println!("ended on {}", seek_rel(sysdic, 0).unwrap());
-        
-        //println!("start collecting dictionary");
-        let dictionary = dart::collect_links_into_hashmap(&links, &tokens);
-        drop(links);
-        //println!("end collecting dictionary");
+        let (dictionary, num_sysdic_left_contexts, num_sysdic_right_contexts, feature_string_bytes) = dart::load_mecab_dart_file(0xE1_17_21_81, sysdic)?;
         
         let mut contains_longer : HashSet<String> = HashSet::new();
         
-        //println!("start building prefix set");
         for entry in dictionary.keys()
         {
-            let codepoints = codepoints(entry);
-            for i in 1..codepoints.len()-1
+            if entry == "プログラミング"
             {
-                contains_longer.insert(codepoints[0..i].iter().collect());
+                println!("--- found PROGRAMMING");
+            }
+            let codepoints = codepoints(entry);
+            if entry == "プログラミング"
+            {
+                println!("--- {:?}", codepoints);
+                println!("--- {:?}", 1..codepoints.len());
+            }
+            for i in 1..codepoints.len()
+            {
+                let toinsert = codepoints[0..i].iter().collect();
+                if entry == "プログラミング"
+                {
+                    println!("--- inserted {}", toinsert);
+                }
+                contains_longer.insert(toinsert);
             }
         }
-        //println!("end building prefix set");
         
-        //println!("start reading matrix");
         let left_edges  = read_u16(matrix)?;
         let right_edges = read_u16(matrix)?;
         
@@ -311,15 +244,12 @@ impl Dict {
         let mut connection_matrix : Vec<i16> = Vec::with_capacity(connections as usize);
         connection_matrix.resize(connections as usize, 0);
         read_i16_buffer(matrix, &mut connection_matrix)?;
-        //println!("end reading matrix");
         
-        //println!("start preparing heuristic");
         let mut min_edge_cost_ever : i64 = 0;
         for edge_cost in &connection_matrix
         {
             min_edge_cost_ever = std::cmp::min(min_edge_cost_ever, *edge_cost as i64);
         }
-        //println!("end preparing heuristic");
         
         Ok(Dict
         { dictionary,
@@ -584,26 +514,42 @@ mod tests {
     #[test]
     fn test_general()
     {
-        let sysdic_raw = File::open("data/sys.dic").unwrap(); // you need to acquire a mecab dictionary and place its sys.dic file here manually
-        let mut sysdic = BufReader::new(sysdic_raw);
-        
-        let matrix_raw = File::open("data/matrix.bin").unwrap(); // you need to acquire a mecab dictionary and place its matrix.bin file here manually
-        let mut matrix = BufReader::new(matrix_raw);
+        // you need to acquire a mecab dictionary and place these files here manually
+        let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
+        let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
         
         let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
         
-        let result = parse(&dict, &"これを持っていけ".to_string());
+        let result = parse(&dict, &"これを持っていけ".to_string()).unwrap();
         
-        if let Some(result) = result
+        for token in &result.0
         {
-            for token in &result.0
-            {
-                println!("{}", token.feature);
-            }
-            let split_up_string = tokenstream_to_string(&result.0, "|");
-            println!("{}", split_up_string);
-            assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
+            println!("{}", token.feature);
         }
+        let split_up_string = tokenstream_to_string(&result.0, "|");
+        println!("{}", split_up_string);
+        assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
+    }
+    
+    #[test]
+    fn test_lots_of_text()
+    {
+        // you need to acquire a mecab dictionary and place these files here manually
+        let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
+        let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
+        
+        let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
+        
+        let result = parse(&dict, &"メタプログラミング (metaprogramming) とはプログラミング技法の一種で、ロジックを直接コーディングするのではなく、あるパターンをもったロジックを生成する高位ロジックによってプログラミングを行う方法、またその高位ロジックを定義する方法のこと。主に対象言語に埋め込まれたマクロ言語によって行われる。".to_string()).unwrap();
+        
+        for token in &result.0
+        {
+            println!("{}", token.feature);
+        }
+        let split_up_string = tokenstream_to_string(&result.0, "|");
+        println!("{}", split_up_string);
+        assert_eq!(split_up_string, "メタ|プログラミング| |(|metaprogramming|)| |と|は|プログラミング|技法|の|一種|で|、|ロジック|を|直接|コーディング|する|の|で|は|なく|、|ある|パターン|を|もっ|た|ロジック|を|生成|する|高位|ロジック|に|よっ|て|プログラミング|
+を|行う|方法|、|また|その|高位|ロジック|を|定義|する|方法|の|こと|。|主に|対象|言語|に|埋め込ま|れ|た|マクロ|言語|に|よっ|て|行わ|れる|。"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
     }
 }
 

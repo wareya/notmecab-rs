@@ -1,7 +1,8 @@
-use std::io::BufReader;
 use std::collections::HashMap;
 
+use std::io::BufReader;
 use std::io::Read;
+use std::io::Seek;
 
 use super::file::*;
 use super::FormatToken;
@@ -73,44 +74,6 @@ fn collect_links_hashmap(links : &[Link], base : u32, collection : &mut Vec<(Str
     }
 }
 
-// for supporting unk.dic in the future
-
-/*
-struct Range {
-    start : char,
-    end : char,
-}
-fn collect_links_ranges(links : &[Link], base : u32, ranges : &mut Vec<Range>, key : Vec<u8>, start : &mut char, state : &mut u32)
-{
-    if check_valid_out(links, base, base).is_ok()
-    {
-        if let Ok(key) = read_str_buffer(&key)
-        {
-            if key.chars().count() != 1:
-            {
-                panic("range dictionary contains non-single-character entries");
-            }
-            let c : char = key.chars().next();
-            
-            let newstate = !links[base as usize].base;
-            if newstate != oldstate && start != 0
-            {
-                
-            }
-        }
-    }
-    for i in 0..0x100
-    {
-        if check_valid_link(links, base, base+1+i).is_ok()
-        {
-            let mut newkey = key.clone();
-            newkey.push(i as u8);
-            collect_links_ranges(links, links[(base+1+i) as usize].base, collection, newkey, start, state);
-        }
-    }
-}
-*/
-
 fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken]) -> HashMap<String, Vec<FormatToken>>
 {
     let mut dictionary : HashMap<String, Vec<FormatToken>> = HashMap::new();
@@ -130,10 +93,81 @@ fn entries_to_tokens(entries : Vec<(String, u32)>, tokens : &[FormatToken]) -> H
     dictionary
 }
 
-pub (crate) fn collect_links_into_hashmap(links : &[Link], tokens : &[FormatToken]) -> HashMap<String, Vec<FormatToken>>
+fn collect_links_into_hashmap(links : Vec<Link>, tokens : Vec<FormatToken>) -> HashMap<String, Vec<FormatToken>>
 {
     let mut collection : Vec<(String, u32)> = Vec::new();
     collect_links_hashmap(&links, links[0].base, &mut collection, &[]);
     
-    entries_to_tokens(collection, tokens)
+    entries_to_tokens(collection, &tokens)
+}
+
+pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut BufReader<T>) -> Result<(HashMap<String, Vec<FormatToken>>, u32, u32, Vec<u8>), &'static str>
+{
+    // magic
+    let magic = read_u32(dic)?;
+    if magic != arg_magic
+    {
+        return Err("not a mecab dic file or is a dic file of the wrong kind");
+    }
+    
+    // 0x04
+    let version = read_u32(dic)?;
+    if version != 0x66
+    {
+        return Err("unsupported version");
+    }
+
+    // 0x08
+    seek_rel_4(dic)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
+    
+    let _num_unknown = read_u32(dic)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
+    // 0x10
+    // this information is duplicated in the matrix file and we will ensure that it is consistent
+    let num_dic_left_contexts  = read_u32(dic)?;
+    let num_dic_right_contexts = read_u32(dic)?;
+    
+    // 0x18
+    let linkbytes = read_u32(dic)?; // number of bytes used to store the dual-array trie
+    if linkbytes%8 != 0
+    {
+        return Err("dictionary broken: link table stored with number of bytes that is not a multiple of 8");
+    }
+    let tokenbytes = read_u32(dic)?; // number of bytes used to store the list of tokens
+    if tokenbytes%16 != 0
+    {
+        return Err("dictionary broken: token table stored with number of bytes that is not a multiple of 16");
+    }
+    // 0x20
+    let featurebytes = read_u32(dic)?; // number of bytes used to store the feature string pile
+    seek_rel_4(dic)?;
+    
+    let encoding = read_nstr(dic, 0x20)?;
+    if encoding != "UTF-8"
+    {
+        return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
+    }
+    
+    let mut links : Vec<Link> = Vec::with_capacity((linkbytes/8) as usize);
+    for _i in 0..(linkbytes/8)
+    {
+        links.push(Link::read(dic)?);
+    }
+    
+    let mut tokens : Vec<FormatToken> = Vec::with_capacity((tokenbytes/16) as usize);
+    for _i in 0..(tokenbytes/16)
+    {
+        tokens.push(FormatToken::read(dic, tokens.len() as u32)?);
+    }
+    
+    let mut feature_string_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
+    feature_string_bytes.resize(featurebytes as usize, 0);
+    
+    if dic.read_exact(&mut feature_string_bytes).is_err()
+    {
+        return Err("IO error")
+    }
+    
+    let dictionary = collect_links_into_hashmap(links, tokens);
+    
+    Ok((dictionary, num_dic_left_contexts, num_dic_right_contexts, feature_string_bytes))
 }

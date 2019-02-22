@@ -87,7 +87,6 @@ pub (crate) fn read_str_buffer(buf : &[u8]) -> Result<String, &'static str>
 // this is way, WAY faster than seeking 4 bytes forward explicitly.
 pub (crate) fn seek_rel_4<T : Read>(f : &mut BufReader<T>) -> Result<(), &'static str>
 {
-    //read_u32(f)?;
     let mut bogus = [0u8; 4];
     match f.read_exact(&mut bogus)
     {

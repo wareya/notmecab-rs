@@ -3,6 +3,7 @@ notmecab-rs is a very basic mecab clone, designed only to do parsing, not traini
 This is meant to be used as a library by other tools such as frequency analyzers. Not directly by people.
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
 Support for unk.dic is currently unimplemented, so in rare situations, the parse might be different from mecab.
+User dictionaries are not yet supported.
 
 Licensed under the Apache License, Version 2.0.
 
@@ -42,10 +43,15 @@ Output of example:
     動詞,非自立可能,*,*,五段-カ行,命令形,イク,行く,いけ,イケ,いく,イク,和,*,*,*,*,*,*,用,イケ,イク,イケ,イク,0,C2,*,470874478224161,1713
     これ｜を｜持っ｜て｜いけ
 
-You can also call parse_to_lexertoken, which less string allocation, but you don't get the feature string as a string, and you need to feed it chars, not a string.
+You can also call parse_to_lexertoken, which does less string allocation, but you don't get the feature string as a string, and you need to feed it chars, not a string.
 
-NOTE: This software is unusably slow if optimizations are disabled.
+
+Notes:
+
+- Support for unk.dic is unimplemented, because it is rather complicated but almost never affects the tokenization.
+- This software is unusably slow if optimizations are disabled.
 
 TODO:
 
-- implement unk.dic and its right/left context IDs
+- implement basic user dictionary support, without cost rewrites
+-- implement cost rewrites afterwards
