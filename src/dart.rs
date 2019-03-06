@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use std::io::BufReader;
 use std::io::Read;
@@ -6,6 +7,7 @@ use std::io::Seek;
 
 use super::file::*;
 use super::FormatToken;
+use crate::strings::*;
 
 #[derive(Debug)]
 pub (crate) struct Link {
@@ -101,7 +103,38 @@ fn collect_links_into_hashmap(links : Vec<Link>, tokens : Vec<FormatToken>) -> H
     entries_to_tokens(collection, &tokens)
 }
 
-pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut BufReader<T>) -> Result<(HashMap<String, Vec<FormatToken>>, u32, u32, Vec<u8>), &'static str>
+#[derive(Debug)]
+pub (crate) struct DartDict {
+    pub(crate) dict: HashMap<String, Vec<FormatToken>>,
+    pub(crate) contains_longer: HashSet<String>,
+    pub(crate) left_contexts: u32,
+    pub(crate) right_contexts: u32,
+    pub(crate) feature_bytes: Vec<u8>,
+}
+
+impl DartDict {
+    pub (crate) fn may_contain(&self, find : &String) -> bool
+    {
+        self.contains_longer.contains(find) || self.dict.contains_key(find)
+    }
+    pub (crate) fn dic_get<'a>(&'a self, find : &String) -> Option<&'a Vec<FormatToken>>
+    {
+        self.dict.get(find)
+    }
+    pub (crate) fn feature_get(&self, offset : u32) -> Result<String, &'static str>
+    {
+        if (offset as usize) < self.feature_bytes.len()
+        {
+            read_str_buffer(&self.feature_bytes[offset as usize..])
+        }
+        else
+        {
+            Ok("".to_string())
+        }
+    }
+}
+
+pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut BufReader<T>) -> Result<DartDict, &'static str>
 {
     // magic
     let magic = read_u32(dic)?;
@@ -123,8 +156,8 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
     let _num_unknown = read_u32(dic)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
     // 0x10
     // this information is duplicated in the matrix file and we will ensure that it is consistent
-    let num_dic_left_contexts  = read_u32(dic)?;
-    let num_dic_right_contexts = read_u32(dic)?;
+    let left_contexts  = read_u32(dic)?;
+    let right_contexts = read_u32(dic)?;
     
     // 0x18
     let linkbytes = read_u32(dic)?; // number of bytes used to store the dual-array trie
@@ -159,15 +192,27 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
         tokens.push(FormatToken::read(dic, tokens.len() as u32)?);
     }
     
-    let mut feature_string_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
-    feature_string_bytes.resize(featurebytes as usize, 0);
+    let mut feature_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
+    feature_bytes.resize(featurebytes as usize, 0);
     
-    if dic.read_exact(&mut feature_string_bytes).is_err()
+    if dic.read_exact(&mut feature_bytes).is_err()
     {
         return Err("IO error")
     }
     
     let dictionary = collect_links_into_hashmap(links, tokens);
     
-    Ok((dictionary, num_dic_left_contexts, num_dic_right_contexts, feature_string_bytes))
+    let mut contains_longer : HashSet<String> = HashSet::new();
+    
+    for entry in dictionary.keys()
+    {
+        let codepoints = codepoints(entry);
+        for i in 1..codepoints.len()
+        {
+            let toinsert = codepoints[0..i].iter().collect();
+            contains_longer.insert(toinsert);
+        }
+    }
+    
+    Ok(DartDict{dict: dictionary, contains_longer, left_contexts, right_contexts, feature_bytes})
 }

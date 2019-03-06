@@ -14,11 +14,12 @@ use pathfinding::directed::astar::astar;
 mod strings;
 mod file;
 mod dart;
-mod etc;
+mod unkchar;
 
 use self::file::*;
 use self::strings::*;
-use self::etc::load_char_bin;
+use self::dart::*;
+use self::unkchar::*;
 
 #[derive(Clone)]
 #[derive(Debug)]
@@ -61,11 +62,7 @@ pub enum TokenType {
     Normal,
     /// Used internally for virtual beginning-of-string and end-of-string tokens.
     BOS,
-    /// Unknown character or characters. Could not be matched to a mecab dictionary entry at all.
-    ///
-    /// Note: notmecab handles UNK tokens differently from how mecab does. The unknown dictionary is not implemented.
-    ///
-    /// This difference in behavior was previously considered a bug, but it is not considered a bug anymore.
+    /// Unknown character or characters.
     UNK
 }
 
@@ -82,18 +79,6 @@ pub struct LexerToken {
     /// Used internally during lattice pathfinding.
     pub cost : i16,
     
-    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
-    pub original_id : u32,
-    
-    /// Feed this to read_feature_string to get this token's "feature" string.
-    ///
-    /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
-    ///
-    /// The exact format of the feature string is dictionary-specific.
-    ///
-    /// feature_offset is currently !0u32 (i.e. 0xFFFFFFFF) for tokens of the kind TokenType::UNK. Feeding this value to read_feature_string will result in a blank string, not an error.
-    pub feature_offset : u32,
-    
     /// Location, in codepoints, of the surface of this LexerToken in the string it was parsed from.
     pub start : usize, 
     /// Corresponding ending location, in codepoints. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one codepoint long)
@@ -102,6 +87,11 @@ pub struct LexerToken {
     ///
     /// The BOS (beginning/ending-of-string) tokens are stripped away in parse_to_lexertokens.
     pub kind : TokenType,
+    
+    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
+    pub original_id : u32,
+    
+    feature_offset : u32,
 }
 
 impl LexerToken {
@@ -182,16 +172,13 @@ impl ParserToken {
 }
 
 pub struct Dict {
-    dictionary : HashMap<String, Vec<FormatToken>>,
-    contains_longer : HashSet<String>,
-    
-    feature_string_bytes : Vec<u8>, // used to get feature strings when using parse_to_lexertokens
-    
-    min_edge_cost_ever : i64,
-
+    sys_dic : DartDict,
+    unk_dic : DartDict,
+    unk_data : UnkChar,
     left_edges : u16,
     right_edges : u16,
     connection_matrix : Vec<i16>, // 2d matrix encoded as 1d
+    min_edge_cost_ever : i64,
 }
 
 impl Dict {
@@ -202,39 +189,21 @@ impl Dict {
     /// Only supports UTF-8 mecab dictionaries with a version number of 0x66.
     ///
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
-    pub fn load<T : Read + Seek, Y : Read + Seek>(sysdic : &mut BufReader<T>, matrix : &mut BufReader<Y>) -> Result<Dict, &'static str>
+    pub fn load<T : Read + Seek>(
+        sysdic : &mut BufReader<T>,
+        matrix : &mut BufReader<T>,
+        unkdic : &mut BufReader<T>,
+        unkchar : &mut BufReader<T>,
+    ) -> Result<Dict, &'static str>
     {
-        let (dictionary, num_sysdic_left_contexts, num_sysdic_right_contexts, feature_string_bytes) = dart::load_mecab_dart_file(0xE1_17_21_81, sysdic)?;
-        
-        let mut contains_longer : HashSet<String> = HashSet::new();
-        
-        for entry in dictionary.keys()
-        {
-            if entry == "プログラミング"
-            {
-                println!("--- found PROGRAMMING");
-            }
-            let codepoints = codepoints(entry);
-            if entry == "プログラミング"
-            {
-                println!("--- {:?}", codepoints);
-                println!("--- {:?}", 1..codepoints.len());
-            }
-            for i in 1..codepoints.len()
-            {
-                let toinsert = codepoints[0..i].iter().collect();
-                if entry == "プログラミング"
-                {
-                    println!("--- inserted {}", toinsert);
-                }
-                contains_longer.insert(toinsert);
-            }
-        }
+        let sys_dic = load_mecab_dart_file(0xE1_17_21_81, sysdic)?;
+        let unk_dic = load_mecab_dart_file(0xEF_71_9A_03, unkdic)?;
+        let unk_data = load_char_bin(unkchar)?;
         
         let left_edges  = read_u16(matrix)?;
         let right_edges = read_u16(matrix)?;
         
-        if num_sysdic_left_contexts != left_edges as u32 || num_sysdic_right_contexts != right_edges as u32
+        if sys_dic.left_contexts != left_edges as u32 || sys_dic.right_contexts != right_edges as u32
         {
             return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
         }
@@ -252,33 +221,22 @@ impl Dict {
         }
         
         Ok(Dict
-        { dictionary,
-          contains_longer,
-          feature_string_bytes,
-          
-          min_edge_cost_ever,
-          
+        { sys_dic,
+          unk_dic,
+          unk_data,
           left_edges,
           right_edges,
           connection_matrix,
+          min_edge_cost_ever,
         })
     }
-    /// Takes an offset into an internal byte table that stores feature strings, returns the feature string starting at that offset.
-    ///
-    /// This is the way that feature strings are stored internally in mecab dictionaries, and decoding them all on load time would slow down loading dramatically.
-    ///
-    /// Does not check that the given offset is ACTUALLY the start of a feature string, so if you give an offset half way into a feature string, you'll get the tail end of that feature string.
-    ///
-    /// You should only feed this function the feature_offset field of a LexerToken.
-    pub fn read_feature_string(&self, feature_offset : u32) -> Result<String, &'static str>
+    /// Returns the feature string belonging to a LexerToken. They are stored in a large byte buffer internally as copying them on each parse may be expensive.
+    pub fn read_feature_string(&self, token : &LexerToken) -> Result<String, &'static str>
     {
-        if (feature_offset as usize) < self.feature_string_bytes.len()
+        match token.kind
         {
-            read_str_buffer(&self.feature_string_bytes[feature_offset as usize..])
-        }
-        else
-        {
-            Ok("".to_string())
+            TokenType::UNK => self.unk_dic.feature_get(token.feature_offset),
+            TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(token.feature_offset),
         }
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
@@ -335,9 +293,9 @@ fn build_lattice(dict : &Dict, pseudo_string : &[char]) -> (Vec<Vec<LexerToken>>
         
         let mut lattice_column : Vec<LexerToken> = Vec::new();
         
-        while dict.contains_longer.contains(&substring) || dict.dictionary.contains_key(&substring)
+        while dict.sys_dic.may_contain(&substring)
         {
-            if let Some(matching_tokens) = dict.dictionary.get(&substring)
+            if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
             {
                 for token in matching_tokens
                 {
@@ -468,15 +426,7 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
         for token in result.0
         {
             let surface : String = pseudo_string[token.start-1..token.end-1].iter().collect();
-            let feature =
-            if token.kind == TokenType::Normal
-            {
-                dict.read_feature_string(token.feature_offset).unwrap()
-            }
-            else
-            {
-                "UNK".to_string()
-            };
+            let feature = dict.read_feature_string(&token).unwrap();
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind == TokenType::UNK));
         }
         
@@ -517,8 +467,10 @@ mod tests {
         // you need to acquire a mecab dictionary and place these files here manually
         let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
         let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
+        let mut unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
+        let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
         
-        let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
+        let dict = Dict::load(&mut sysdic, &mut matrix, &mut unkdic, &mut unkdef).unwrap();
         
         let result = parse(&dict, &"これを持っていけ".to_string()).unwrap();
         
@@ -537,8 +489,10 @@ mod tests {
         // you need to acquire a mecab dictionary and place these files here manually
         let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
         let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
+        let mut unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
+        let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
         
-        let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
+        let dict = Dict::load(&mut sysdic, &mut matrix, &mut unkdic, &mut unkdef).unwrap();
         
         let result = parse(&dict, &"メタプログラミング (metaprogramming) とはプログラミング技法の一種で、ロジックを直接コーディングするのではなく、あるパターンをもったロジックを生成する高位ロジックによってプログラミングを行う方法、またその高位ロジックを定義する方法のこと。主に対象言語に埋め込まれたマクロ言語によって行われる。".to_string()).unwrap();
         

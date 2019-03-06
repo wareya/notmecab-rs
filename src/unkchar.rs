@@ -80,7 +80,7 @@ impl CharData {
 
 pub (crate) struct UnkChar {
     types : HashMap<u8, TypeData>,
-    data : [CharType; 0x10000],
+    data : Vec<CharType>
 }
 
 pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Result<UnkChar, &'static str>
@@ -93,9 +93,9 @@ pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Resul
     }
     let mut unk_chars = UnkChar {
         types : HashMap::new(),
-        data : [ CharType { typefield : 0, default_type : 0 }; 0x10000 ],
+        data : Vec::new()
     };
-    for i in 0..0x10000
+    for i in 0..0xFFFF
     {
         let bitfield = read_u32(file)?;
         let data = CharData::read(bitfield);
@@ -103,7 +103,26 @@ pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Resul
         {
             unk_chars.types.insert(data.default_type, TypeData::from(data, &type_names)?);
         }
-        unk_chars.data[i] = CharType::from(data);
+        unk_chars.data.push(CharType::from(data));
     }
     Ok(unk_chars)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io::BufReader;
+    use super::*;
+    use crate::dart;
+    
+    #[test]
+    fn test_unkchar_load()
+    {
+        let mut unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
+        let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
+        
+        let unk_dictionary = dart::load_mecab_dart_file(0xEF_71_9A_03, &mut unkdic).unwrap();
+        load_char_bin(&mut unkdef).unwrap();
+    }
+}
+
