@@ -7,7 +7,7 @@ Licensed under the Apache License, Version 2.0.
 
 Testing:
 
-Get unidic's sys.dic and matrix.bin and put them under a new folder next to src/ called data/. Then invoke tests from the repository root.
+Get unidic's sys.dic, matrix.bin, unk.dic, and char.bin and put them in data/. Then invoke tests from the repository root.
 
 Example (from tests):
 
@@ -43,3 +43,4 @@ You can also call parse_to_lexertoken, which does less string allocation, but yo
 Notes:
 
 - This software is unusably slow if optimizations are disabled.
+- Cost rewriting is not performed when user dictionaries are loaded.
