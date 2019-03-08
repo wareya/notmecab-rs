@@ -1,5 +1,7 @@
 notmecab-rs is a very basic mecab clone, designed only to do parsing, not training.
 
+notmecab-rs loads everything into memory, so it has higher memory requirements than mecab, which uses memory mapping for most things.
+
 This is meant to be used as a library by other tools such as frequency analyzers. Not directly by people.
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
 
