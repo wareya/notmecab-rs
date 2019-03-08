@@ -25,6 +25,7 @@ byteorder = "1.2"
 pathfinding = "1.1"
 
 [profile.bench]
+opt-level = 3
 debug = 2
 overflow-checks = true 
 

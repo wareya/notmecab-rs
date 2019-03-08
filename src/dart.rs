@@ -117,9 +117,9 @@ impl DartDict {
     {
         self.contains_longer.contains(find) || self.dict.contains_key(find)
     }
-    pub (crate) fn dic_get<'a>(&'a self, find : &String) -> Option<&'a Vec<FormatToken>>
+    pub (crate) fn dic_get<'a>(&'a self, find : &String) -> Option<Vec<&'a FormatToken>>
     {
-        self.dict.get(find)
+        self.dict.get(find).map(|l| l.iter().map(|x| x).collect())
     }
     pub (crate) fn feature_get(&self, offset : u32) -> Result<String, &'static str>
     {

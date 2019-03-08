@@ -2,8 +2,6 @@ notmecab-rs is a very basic mecab clone, designed only to do parsing, not traini
 
 This is meant to be used as a library by other tools such as frequency analyzers. Not directly by people.
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
-Support for unk.dic is currently unimplemented, so in rare situations, the parse might be different from mecab.
-User dictionaries are not yet supported.
 
 Licensed under the Apache License, Version 2.0.
 
@@ -13,26 +11,23 @@ Get unidic's sys.dic and matrix.bin and put them under a new folder next to src/
 
 Example (from tests):
 
-    let sysdic_raw = File::open("data/sys.dic").unwrap(); // you need to acquire a mecab dictionary and place its sys.dic file here manually
-    let mut sysdic = BufReader::new(sysdic_raw);
-    
-    let matrix_raw = File::open("data/matrix.bin").unwrap(); // you need to acquire a mecab dictionary and place its matrix.bin file here manually
-    let mut matrix = BufReader::new(matrix_raw);
-    
-    let dict = Dict::load(&mut sysdic, &mut matrix).unwrap();
-    
-    let result = parse(&dict, &"これを持っていけ".to_string());
-    
-    if let Some(result) = result
+    // you need to acquire a mecab dictionary and place these files here manually
+    let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
+    let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
+    let mut unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
+    let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
+
+    let dict = Dict::load(&mut sysdic, &mut matrix, &mut unkdic, &mut unkdef).unwrap();
+
+    let result = parse(&dict, &"これを持っていけ".to_string()).unwrap();
+
+    for token in &result.0
     {
-        for token in &result.0
-        {
-            println!("{}", token.feature);
-        }
-        let split_up_string = tokenstream_to_string(&result.0, "|");
-        println!("{}", split_up_string);
-        assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the parse might be different)
+        println!("{}", token.feature);
     }
+    let split_up_string = tokenstream_to_string(&result.0, "|");
+    println!("{}", split_up_string);
+    assert_eq!(split_up_string, "これ|を|持っ|て|いけ"); // this test might fail if you're not testing with unidic (i.e. the correct parse might be different)
 
 Output of example:
 
@@ -45,13 +40,6 @@ Output of example:
 
 You can also call parse_to_lexertoken, which does less string allocation, but you don't get the feature string as a string, and you need to feed it chars, not a string.
 
-
 Notes:
 
-- Support for unk.dic is unimplemented, because it is rather complicated but almost never affects the tokenization.
 - This software is unusably slow if optimizations are disabled.
-
-TODO:
-
-- implement basic user dictionary support, without cost rewrites
--- implement cost rewrites afterwards
