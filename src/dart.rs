@@ -7,7 +7,6 @@ use std::io::Seek;
 
 use super::file::*;
 use super::FormatToken;
-use crate::strings::*;
 
 #[derive(Debug)]
 pub (crate) struct Link {
@@ -201,8 +200,7 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
         tokens.push(FormatToken::read(dic, tokens.len() as u32)?);
     }
     
-    let mut feature_bytes : Vec<u8> = Vec::with_capacity(featurebytes as usize);
-    feature_bytes.resize(featurebytes as usize, 0);
+    let mut feature_bytes : Vec<u8> = vec!(0; featurebytes as usize);
     
     if dic.read_exact(&mut feature_bytes).is_err()
     {

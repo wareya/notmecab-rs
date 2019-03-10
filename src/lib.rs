@@ -6,14 +6,12 @@ use std::str;
 
 extern crate pathfinding;
 
-mod strings;
 mod file;
 mod dart;
 mod unkchar;
 mod userdict;
 
 use self::file::*;
-use self::strings::*;
 use self::dart::*;
 use self::unkchar::*;
 use self::userdict::*;
@@ -48,10 +46,6 @@ impl FormatToken {
         seek_rel_4(sysdic)?;
         
         Ok(ret)
-    }
-    fn blank() -> FormatToken
-    {
-        FormatToken{left_context:0, right_context:0, pos:0, cost:0, original_id:0, feature_offset:0}
     }
 }
 
@@ -205,8 +199,7 @@ impl Dict {
         }
         let connections = left_edges as u32 * right_edges as u32;
         
-        let mut connection_matrix : Vec<i16> = Vec::with_capacity(connections as usize);
-        connection_matrix.resize(connections as usize, 0);
+        let mut connection_matrix : Vec<i16> = vec!(0; connections as usize);
         read_i16_buffer(matrix, &mut connection_matrix)?;
         
         Ok(Dict
@@ -275,15 +268,14 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
     
     let mut index_iter = text[start..].char_indices();
     let mut end = start;
-    let mut first_char = ' ';
-    match index_iter.next()
+    let first_char = match index_iter.next()
     {
         Some((_, c)) =>
         {
             end += c.len_utf8();
-            first_char = c;
+            c
         }
-        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1)), offset),
+        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1)), offset)
     };
     
     let mut substring : &str = &text[start..end];
@@ -326,11 +318,10 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
     if dict.unk_data.always_process(first_char) || lattice_column.is_empty()
     {
         let start_type = &dict.unk_data.get_type(first_char);
-        let mut find_unk = text[start..].char_indices();
         let mut unk_end = start;
         
         let mut unk_indices = vec!();
-        while let Some((_, c)) = find_unk.next()
+        for (_, c) in text[start..].char_indices()
         {
             if dict.unk_data.has_type(c, start_type.number)
             {
@@ -429,7 +420,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let token_events : Vec<LexerToken> = result.0[1..result.0.len()].into_iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
+        let token_events : Vec<LexerToken> = result.0[1..result.0.len()].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
         Some((token_events, result.1))
     }
     else
@@ -536,6 +527,10 @@ mod tests {
           "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
           "Lorem|i|p|s|u|m|d|o|l|o|r|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
         );
+        
+        // unknown character token stuff
+        assert_parse(&dict, "噛", "噛");
+        assert_parse(&dict, "噛\n", "噛|");
         
         // user dictionary
         assert_parse(&dict, "飛行機", "飛行|機");

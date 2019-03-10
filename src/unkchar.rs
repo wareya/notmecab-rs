@@ -56,7 +56,7 @@ impl CharType {
 }
 
 impl CharType {
-    fn has_type(&self, index : u8) -> bool
+    fn has_type(self, index : u8) -> bool
     {
         if index >= 32
         {
@@ -76,7 +76,7 @@ pub (crate) struct TypeData {
 }
 
 impl TypeData {
-    fn from(data : CharData, names : &Vec<String>) -> Result<TypeData, &'static str>
+    fn from(data : CharData, names : &[String]) -> Result<TypeData, &'static str>
     {
         if data.default_type as usize >= names.len()
         {
@@ -98,15 +98,15 @@ pub (crate) struct UnkChar {
 }
 
 impl UnkChar {
-    pub (crate) fn get_type<'a>(&'a self, c : char) -> &'a TypeData
+    pub (crate) fn get_type(&'_ self, c : char) -> &'_ TypeData
     {
         if (c as u32) < 0xFFFF
         {
-            self.types.get(&self.data[c as usize].default_type).unwrap()
+            &self.types[&self.data[c as usize].default_type]
         }
         else
         {
-            self.types.get(&0).unwrap()
+            &self.types[&0]
         }
     }
     pub (crate) fn has_type(&self, c : char, ctype : u8) -> bool
@@ -142,10 +142,7 @@ pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Resul
     {
         let bitfield = read_u32(file)?;
         let data = CharData::read(bitfield);
-        if !unk_chars.types.contains_key(&data.default_type)
-        {
-            unk_chars.types.insert(data.default_type, TypeData::from(data, &type_names)?);
-        }
+        unk_chars.types.entry(data.default_type).or_insert(TypeData::from(data, &type_names)?);
         unk_chars.data.push(CharType::from(data));
     }
     Ok(unk_chars)

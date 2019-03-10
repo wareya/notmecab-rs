@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::FormatToken;
-use crate::strings::*;
 
 #[derive(Debug)]
 pub (crate) struct UserDict {
@@ -24,13 +23,12 @@ impl UserDict {
         for (i, line) in file.lines().enumerate()
         {
             let line = line.or_else(|_| Err("IO error"))?;
-            let parts : Vec<&str> = line.splitn(5, ",").into_iter().collect();
+            let parts : Vec<&str> = line.splitn(5, ',').collect();
             if parts.len() != 5
             {
                 continue;
             }
             let surface = parts[0].to_string();
-            let surface_codepoints = codepoints(&surface);
             let left_context = parts[1].parse::<u16>().or_else(|_| Err("numeric parse error"))?;
             let right_context = parts[2].parse::<u16>().or_else(|_| Err("numeric parse error"))?;
             let cost = parts[3].parse::<i64>().or_else(|_| Err("numeric parse error"))?;
@@ -49,12 +47,14 @@ impl UserDict {
             }
             else
             {
-                dict.insert(surface, vec!(token));
+                dict.insert(surface.clone(), vec!(token));
             }
-            for i in 1..surface_codepoints.len()
+            for (i, _) in surface.char_indices()
             {
-                let toinsert = surface_codepoints[0..i].iter().collect();
-                contains_longer.insert(toinsert);
+                if i > 0
+                {
+                    contains_longer.insert(surface[0..i].to_string());
+                }
             }
             features.push(feature);
         }
