@@ -61,13 +61,13 @@ impl UserDict {
         Ok(UserDict { dict, contains_longer, features })
     }
     
-    pub (crate) fn may_contain(&self, find : &String) -> bool
+    pub (crate) fn may_contain(&self, find : &str) -> bool
     {
         self.contains_longer.contains(find) || self.dict.contains_key(find)
     }
-    pub (crate) fn dic_get<'a>(&'a self, find : &String) -> Option<Vec<&'a FormatToken>>
+    pub (crate) fn dic_get<'a>(&'a self, find : &str) -> Option<&'a Vec<FormatToken>>
     {
-        self.dict.get(find).map(|l| l.iter().map(|x| x).collect())
+        self.dict.get(find)
     }
     pub (crate) fn feature_get(&self, offset : u32) -> String
     {

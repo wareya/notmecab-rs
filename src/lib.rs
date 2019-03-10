@@ -6,8 +6,6 @@ use std::str;
 
 extern crate pathfinding;
 
-use pathfinding::directed::astar::astar;
-
 mod strings;
 mod file;
 mod dart;
@@ -50,6 +48,10 @@ impl FormatToken {
         seek_rel_4(sysdic)?;
         
         Ok(ret)
+    }
+    fn blank() -> FormatToken
+    {
+        FormatToken{left_context:0, right_context:0, pos:0, cost:0, original_id:0, feature_offset:0}
     }
 }
 
@@ -174,6 +176,7 @@ pub struct Dict {
     right_edges : u16,
     connection_matrix : Vec<i16>, // 2d matrix encoded as 1d
     min_edge_cost_ever : i64,
+    min_token_cost_ever : i64,
 }
 
 impl Dict {
@@ -202,7 +205,6 @@ impl Dict {
         {
             return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
         }
-        
         let connections = left_edges as u32 * right_edges as u32;
         
         let mut connection_matrix : Vec<i16> = Vec::with_capacity(connections as usize);
@@ -214,6 +216,11 @@ impl Dict {
         {
             min_edge_cost_ever = std::cmp::min(min_edge_cost_ever, *edge_cost as i64);
         }
+        let mut min_token_cost_ever : i64 = 0;
+        for token in &sys_dic.tokens
+        {
+            min_token_cost_ever = std::cmp::min(min_token_cost_ever, token.cost as i64);
+        }
         
         Ok(Dict
         { sys_dic,
@@ -224,6 +231,7 @@ impl Dict {
           right_edges,
           connection_matrix,
           min_edge_cost_ever,
+          min_token_cost_ever,
         })
     }
     pub fn load_user_dictionary<T : Read>(&mut self, userdic : &mut BufReader<T>) -> Result<(), &'static str>
@@ -245,9 +253,8 @@ impl Dict {
     {
         if left.lattice_end != right.lattice_start
         {
-            return std::i64::MAX;
+            panic!("disconnected nodes");
         }
-        
         if left.right_context > self.left_edges
         {
             panic!("bad right_context");
@@ -266,108 +273,176 @@ impl Dict {
         
         right.cost as i64 + connection_cost as i64
     }
-    fn may_contain(&self, find : &String) -> bool
+    fn may_contain(&self, find : &str) -> bool
     {
         self.sys_dic.may_contain(find) || self.user_dic.as_ref().map(|x| x.may_contain(find)).unwrap_or_else(|| false)
     }
 }
 
-fn build_lattice(dict : &Dict, pseudo_string : &[char]) -> (Vec<Vec<LexerToken>>, i64)
+fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len : usize) -> (Vec<LexerToken>, usize)
 {
-    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(pseudo_string.len());
-    
-    let mut max_covered_index = 0usize;
-    
-    let mut min_token_cost_ever : i64 = 0;
-    
-    lattice.push(vec!(LexerToken::make_bos(0, 0, lattice.len(), lattice.len()+1)));
-    
-    for start in 0..pseudo_string.len()
+    let mut offset = 0;
+    while text[start+offset..].chars().next() == Some(' ')
     {
-        let mut end = start+1;
-        let mut substring : String = pseudo_string[start..end].iter().collect();
-        
-        if substring == " "
+        offset += 1;
+    }
+    start += offset;
+    
+    let mut index_iter = text[start..].char_indices();
+    let mut end = start;
+    let mut first_char = ' ';
+    match index_iter.next()
+    {
+        Some((_, c)) =>
         {
-            continue;
+            end += c.len_utf8();
+            first_char = c;
         }
-        
-        let mut lattice_column : Vec<LexerToken> = Vec::new();
-        
-        while dict.may_contain(&substring)
+        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1)), offset),
+    };
+    
+    let mut substring : &str = &text[start..end];
+    
+    let mut lattice_column : Vec<LexerToken> = Vec::with_capacity(20);
+    
+    while dict.may_contain(&substring)
+    {
+        if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
         {
-            if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
+            lattice_column.reserve(matching_tokens.len());
+            for token in matching_tokens
             {
+                lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::Normal));
+            }
+        }
+        if let Some(user_dic) = &dict.user_dic
+        {
+            if let Some(matching_tokens) = user_dic.dic_get(&substring)
+            {
+                lattice_column.reserve(matching_tokens.len());
                 for token in matching_tokens
                 {
-                    lattice_column.push(LexerToken::from(token, start, end, lattice.len(), lattice.len()+end-start, TokenType::Normal));
-                    
-                    min_token_cost_ever = std::cmp::min(min_token_cost_ever, token.cost as i64);
+                    lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::User));
                 }
-                max_covered_index = std::cmp::max(max_covered_index, end);
             }
-            if let Some(user_dic) = &dict.user_dic
+        }
+        
+        match index_iter.next()
+        {
+            Some((_, c)) =>
             {
-                if let Some(matching_tokens) = user_dic.dic_get(&substring)
-                {
-                    for token in matching_tokens
-                    {
-                        lattice_column.push(LexerToken::from(token, start, end, lattice.len(), lattice.len()+end-start, TokenType::User));
-                        min_token_cost_ever = std::cmp::min(min_token_cost_ever, token.cost as i64);
-                    }
-                    max_covered_index = std::cmp::max(max_covered_index, end);
-                }
+                end += c.len_utf8();
+                substring = &text[start..end];
             }
-            
-            if end >= pseudo_string.len()
+            None => break
+        }
+    }
+    
+    if dict.unk_data.always_process(first_char) || lattice_column.is_empty()
+    {
+        let start_type = &dict.unk_data.get_type(first_char);
+        let mut find_unk = text[start..].char_indices();
+        let mut unk_end = start;
+        
+        let mut unk_indices = vec!();
+        while let Some((_, c)) = find_unk.next()
+        {
+            if dict.unk_data.has_type(c, start_type.number)
+            {
+                unk_end += c.len_utf8();
+                unk_indices.push(unk_end);
+            }
+            else
             {
                 break;
             }
-            substring.push(pseudo_string[end]);
-            end += 1;
         }
         
-        if dict.unk_data.always_process(pseudo_string[start]) || (start == max_covered_index && lattice_column.is_empty())
+        if !unk_indices.is_empty()
         {
-            let start_type = dict.unk_data.get_type(pseudo_string[start]).clone();
-            let mut unk_seq_limit = start+1;
-            while unk_seq_limit < pseudo_string.len() && dict.unk_data.has_type(pseudo_string[unk_seq_limit], start_type.number)
-            {
-                unk_seq_limit += 1;
-            }
-            
             if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
             {
+                lattice_column.reserve(matching_tokens.len() * (start_type.prefix_group_len as usize + start_type.greedy_group as usize));
                 for token in matching_tokens
                 {
                     if start_type.greedy_group
                     {
-                        lattice_column.push(LexerToken::from(token, start, unk_seq_limit, lattice.len(), lattice.len()+unk_seq_limit-start, TokenType::UNK));
-                        max_covered_index = std::cmp::max(max_covered_index, unk_seq_limit);
+                        let end = *unk_indices.last().unwrap();
+                        lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
                     }
                     if start_type.prefix_group_len > 0
                     {
                         for i in 1..=start_type.prefix_group_len
                         {
-                            if i as usize >= unk_seq_limit
+                            if let Some(end) = unk_indices.get(i as usize)
+                            {
+                                lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
+                            }
+                            else
                             {
                                 break;
                             }
-                            lattice_column.push(LexerToken::from(token, start, start+i as usize, lattice.len(), lattice.len()+i as usize-start, TokenType::UNK));
-                            max_covered_index = std::cmp::max(max_covered_index, start+i as usize);
                         }
                     }
-                    min_token_cost_ever = std::cmp::min(min_token_cost_ever, token.cost as i64);
                 }
             }
         }
-        
-        lattice.push(lattice_column);
     }
+    
+    (lattice_column, offset)
+}
+
+/*
+// failed microptimization attempt
+fn binary_insert<T : std::cmp::Ord>(vec : &mut Vec<T>, thing : T)
+{
+    match vec.binary_search(&thing)
+    {
+        Err(pos) => vec.insert(pos, thing),
+        _ => ()
+    }
+}
+fn binary_remove_and_under<T : std::cmp::Ord>(vec : &mut Vec<T>, thing : T)
+{
+    match vec.binary_search(&thing)
+    {
+        Ok(pos) => vec.drain(0..pos),
+        Err(pos) => vec.drain(0..pos-1),
+    };
+}
+fn binary_contains<T : std::cmp::Ord>(vec : &Vec<T>, thing : &T) -> bool
+{
+    match vec.binary_search(thing)
+    {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+*/
+
+fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
+{
+    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(text.len()+2);
     
     lattice.push(vec!(LexerToken::make_bos(0, 0, lattice.len(), lattice.len()+1)));
     
-    (lattice, min_token_cost_ever)
+    let mut skip_until_after = 0;
+    
+    for i in 0..text.len()
+    {
+        if i < skip_until_after || !text.is_char_boundary(i)
+        {
+            lattice.push(Vec::new());
+        }
+        else
+        {
+            let (column, skipnext) = build_lattice_column(dict, text, i, lattice.len());
+            skip_until_after = i+skipnext;
+            lattice.push(column);
+        }
+    }
+    
+    lattice
 }
 
 /// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
@@ -377,70 +452,40 @@ fn build_lattice(dict : &Dict, pseudo_string : &[char]) -> (Vec<Vec<LexerToken>>
 /// Returns a vector listing the LexerTokens on the chosen path and the cost the path took. Cost can be negative.
 ///
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Vec<LexerToken>, i64)>
+pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
-    let (lattice, min_token_cost_ever) = build_lattice(dict, pseudo_string);
+    let lattice = build_lattice(dict, text);
     
-    let result = astar(
+    if lattice.len() > 4
+    {
+        print!("");
+    }
+    
+    let result = pathfinding::directed::idastar::idastar(
         // start
         &(0usize, 0usize),
         // successors
         |&(column, row)|
         {
             let left = &lattice[column][row];
-            
-            if left.lattice_end >= lattice.len()
-            {
-                return vec!();
-            }
-            else
-            {
-                let mut ret : Vec<((usize, usize), i64)> = Vec::new();
-                for row in 0..lattice[left.lattice_end].len()
-                {
-                    let right = &lattice[left.lattice_end][row];
-                    ret.push(((left.lattice_end, row), dict.calculate_cost(left, right)));
-                }
-                ret
-            }
+            lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
         },
         // heuristic
         |&(column, row)|
         {
-            let left = &lattice[column][row];
-            
-            if left.lattice_end < lattice.len()
-            {
-                let distance = lattice.len() - left.lattice_end;
-                let heur = distance as i64 * (dict.min_edge_cost_ever + min_token_cost_ever);
-                heur
-            }
-            else
-            {
-                0
-            }
+            (dict.min_edge_cost_ever + dict.min_token_cost_ever) * (lattice.len() - lattice[column][row].lattice_end) as i64
         },
         // success
         |&(column, row)|
         {
-            let left = &lattice[column][row];
-            
-            left.lattice_end == lattice.len()
+            lattice[column][row].lattice_end == lattice.len()
         }
     );
+    
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let mut token_events : Vec<LexerToken> = Vec::new();
-        
-        for event in result.0
-        {
-            let token = &lattice[event.0][event.1];
-            if token.kind != TokenType::BOS
-            {
-                token_events.push(token.clone());
-            }
-        }
+        let token_events : Vec<LexerToken> = result.0[1..result.0.len()].into_iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
         
         Some((token_events, result.1))
     }
@@ -459,17 +504,15 @@ pub fn parse_to_lexertokens(dict : &Dict, pseudo_string : &[char]) -> Option<(Ve
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
 {
-    let pseudo_string = codepoints(text);
-    
-    let result = parse_to_lexertokens(dict, &pseudo_string);
+    let result = parse_to_lexertokens(dict, &text);
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let mut lexeme_events : Vec<ParserToken> = Vec::new();
+        let mut lexeme_events : Vec<ParserToken> = Vec::with_capacity(result.0.len());
         
         for token in result.0
         {
-            let surface : String = pseudo_string[token.start..token.end].iter().collect();
+            let surface : String = text[token.start..token.end].to_string();
             let feature = dict.read_feature_string(&token).unwrap();
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
         }

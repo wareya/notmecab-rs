@@ -1,10 +1,9 @@
 [package]
 name = "notmecab"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["wareya <wareya@gmail.com>"]
 edition = "2018"
 exclude = [
-    "testdata/*",
     "data/*",
 ]
 
@@ -27,8 +26,8 @@ pathfinding = "1.1"
 [profile.bench]
 opt-level = 3
 debug = 2
-overflow-checks = true 
+overflow-checks = true
 
 [profile.test]
-opt-level = 3
-overflow-checks = true 
+opt-level = 1
+overflow-checks = true
