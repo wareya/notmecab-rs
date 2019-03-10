@@ -175,8 +175,6 @@ pub struct Dict {
     left_edges : u16,
     right_edges : u16,
     connection_matrix : Vec<i16>, // 2d matrix encoded as 1d
-    min_edge_cost_ever : i64,
-    min_token_cost_ever : i64,
 }
 
 impl Dict {
@@ -211,17 +209,6 @@ impl Dict {
         connection_matrix.resize(connections as usize, 0);
         read_i16_buffer(matrix, &mut connection_matrix)?;
         
-        let mut min_edge_cost_ever : i64 = 0;
-        for edge_cost in &connection_matrix
-        {
-            min_edge_cost_ever = std::cmp::min(min_edge_cost_ever, *edge_cost as i64);
-        }
-        let mut min_token_cost_ever : i64 = 0;
-        for token in &sys_dic.tokens
-        {
-            min_token_cost_ever = std::cmp::min(min_token_cost_ever, token.cost as i64);
-        }
-        
         Ok(Dict
         { sys_dic,
           unk_dic,
@@ -230,8 +217,6 @@ impl Dict {
           left_edges,
           right_edges,
           connection_matrix,
-          min_edge_cost_ever,
-          min_token_cost_ever,
         })
     }
     pub fn load_user_dictionary<T : Read>(&mut self, userdic : &mut BufReader<T>) -> Result<(), &'static str>
@@ -282,7 +267,7 @@ impl Dict {
 fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len : usize) -> (Vec<LexerToken>, usize)
 {
     let mut offset = 0;
-    while text[start+offset..].chars().next() == Some(' ')
+    while match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
     {
         offset += 1;
     }
@@ -372,7 +357,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
                     }
                     if start_type.prefix_group_len > 0
                     {
-                        for i in 1..=start_type.prefix_group_len
+                        for i in 0..start_type.prefix_group_len
                         {
                             if let Some(end) = unk_indices.get(i as usize)
                             {
@@ -391,34 +376,6 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
     
     (lattice_column, offset)
 }
-
-/*
-// failed microptimization attempt
-fn binary_insert<T : std::cmp::Ord>(vec : &mut Vec<T>, thing : T)
-{
-    match vec.binary_search(&thing)
-    {
-        Err(pos) => vec.insert(pos, thing),
-        _ => ()
-    }
-}
-fn binary_remove_and_under<T : std::cmp::Ord>(vec : &mut Vec<T>, thing : T)
-{
-    match vec.binary_search(&thing)
-    {
-        Ok(pos) => vec.drain(0..pos),
-        Err(pos) => vec.drain(0..pos-1),
-    };
-}
-fn binary_contains<T : std::cmp::Ord>(vec : &Vec<T>, thing : &T) -> bool
-{
-    match vec.binary_search(thing)
-    {
-        Ok(_) => true,
-        Err(_) => false,
-    }
-}
-*/
 
 fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
 {
@@ -445,6 +402,19 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
     lattice
 }
 
+static mut time_spent_lattice: u128 = 0;
+static mut time_spent_pathing: u128 = 0;
+pub fn print_profile()
+{
+    unsafe
+    {
+        println!("lattice: {}\npathing: {}",
+            (time_spent_lattice/1000) as f64 / 1000.0,
+            (time_spent_pathing/1000) as f64 / 1000.0
+        );
+    }
+}
+
 /// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
 ///
 /// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
@@ -454,14 +424,17 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
-    let lattice = build_lattice(dict, text);
+    use std::time::{Instant, Duration};
     
-    if lattice.len() > 4
+    let mut now = Instant::now();
+    let lattice = build_lattice(dict, text);
+    unsafe
     {
-        print!("");
+        time_spent_lattice += now.elapsed().as_micros();
     }
     
-    let result = pathfinding::directed::idastar::idastar(
+    let mut now = Instant::now();
+    let result = pathfinding::directed::dijkstra::dijkstra(
         // start
         &(0usize, 0usize),
         // successors
@@ -470,17 +443,16 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
             let left = &lattice[column][row];
             lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
         },
-        // heuristic
-        |&(column, row)|
-        {
-            (dict.min_edge_cost_ever + dict.min_token_cost_ever) * (lattice.len() - lattice[column][row].lattice_end) as i64
-        },
         // success
         |&(column, row)|
         {
             lattice[column][row].lattice_end == lattice.len()
         }
     );
+    unsafe
+    {
+        time_spent_pathing += now.elapsed().as_micros();
+    }
     
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result

@@ -179,7 +179,6 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
     {
         return Err("dictionary broken: token table stored with number of bytes that is not a multiple of 16");
     }
-    println!("num tokens: {}", tokenbytes/16);
     // 0x20
     let featurebytes = read_u32(dic)?; // number of bytes used to store the feature string pile
     seek_rel_4(dic)?;
