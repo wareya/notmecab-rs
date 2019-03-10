@@ -402,19 +402,6 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
     lattice
 }
 
-static mut time_spent_lattice: u128 = 0;
-static mut time_spent_pathing: u128 = 0;
-pub fn print_profile()
-{
-    unsafe
-    {
-        println!("lattice: {}\npathing: {}",
-            (time_spent_lattice/1000) as f64 / 1000.0,
-            (time_spent_pathing/1000) as f64 / 1000.0
-        );
-    }
-}
-
 /// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
 ///
 /// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
@@ -424,16 +411,8 @@ pub fn print_profile()
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
-    use std::time::{Instant, Duration};
-    
-    let mut now = Instant::now();
     let lattice = build_lattice(dict, text);
-    unsafe
-    {
-        time_spent_lattice += now.elapsed().as_micros();
-    }
     
-    let mut now = Instant::now();
     let result = pathfinding::directed::dijkstra::dijkstra(
         // start
         &(0usize, 0usize),
@@ -444,21 +423,13 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
             lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
         },
         // success
-        |&(column, row)|
-        {
-            lattice[column][row].lattice_end == lattice.len()
-        }
+        |&(column, row)| lattice[column][row].lattice_end == lattice.len()
     );
-    unsafe
-    {
-        time_spent_pathing += now.elapsed().as_micros();
-    }
     
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
         let token_events : Vec<LexerToken> = result.0[1..result.0.len()].into_iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
-        
         Some((token_events, result.1))
     }
     else
