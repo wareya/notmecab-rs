@@ -53,6 +53,8 @@ impl FormatToken {
 #[derive(Copy)]
 #[derive(Debug)]
 #[derive(PartialEq)]
+#[derive(Eq)]
+#[derive(Hash)]
 pub enum TokenType {
     /// Token came from a mecab dictionary.
     Normal,
@@ -95,7 +97,7 @@ pub struct LexerToken {
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
     
-    feature_offset : u32,
+    pub feature_offset : u32,
 }
 
 impl LexerToken {
