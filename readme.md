@@ -38,9 +38,9 @@ Output of example:
     動詞,一般,*,*,五段-タ行,連用形-促音便,モツ,持つ,持っ,モッ,持つ,モツ,和,*,*,*,*,*,*,用,モッ,モツ,モッ,モツ,1,C1,*,10391493084848772,37804
     助詞,接続助詞,*,*,*,*,テ,て,て,テ,て,テ,和,*,*,*,*,*,*,接助,テ,テ,テ,テ,*,"動詞%F1,形容詞%F2@-1",*,6837321680953856,24874
     動詞,非自立可能,*,*,五段-カ行,命令形,イク,行く,いけ,イケ,いく,イク,和,*,*,*,*,*,*,用,イケ,イク,イケ,イク,0,C2,*,470874478224161,1713
-    これ｜を｜持っ｜て｜いけ
+    これ|を|持っ|て|いけ
 
-You can also call parse_to_lexertoken, which does less string allocation, but you don't get the feature string as a string, and you need to feed it chars, not a string.
+You can also call parse_to_lexertoken, which does less string allocation, but you don't get the feature string as a string.
 
 Notes:
 

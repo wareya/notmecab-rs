@@ -50,6 +50,7 @@ impl FormatToken {
 }
 
 #[derive(Clone)]
+#[derive(Copy)]
 #[derive(Debug)]
 #[derive(PartialEq)]
 pub enum TokenType {
@@ -169,6 +170,11 @@ pub struct Dict {
     left_edges : u16,
     right_edges : u16,
     connection_matrix : Vec<i16>, // 2d matrix encoded as 1d
+    
+    use_space_stripping : bool,
+    use_unk_forced_processing : bool,
+    use_unk_greedy_grouping : bool,
+    use_unk_prefix_grouping : bool,
 }
 
 impl Dict {
@@ -210,7 +216,61 @@ impl Dict {
           left_edges,
           right_edges,
           connection_matrix,
+          use_space_stripping : true,
+          use_unk_forced_processing : true,
+          use_unk_greedy_grouping : true,
+          use_unk_prefix_grouping : true,
         })
+    }
+    /// Set whether the 0x20 whitespace stripping behavior is enabled. Returns the previous value of the setting.
+    ///
+    /// Enabled by default.
+    ///
+    /// When enabled, spaces are virtually added to the front of the next token/tokens during lattice construction. This has the effect of turning 0x20 whitespace sequences into forced separators without affecting connection costs, but makes it slightly more difficult to reconstruct the exact original text from the output of the parser.
+    pub fn set_space_stripping(&mut self, setting : bool) -> bool
+    {
+        let prev = self.use_space_stripping;
+        self.use_space_stripping = setting;
+        prev
+    }
+    /// Set whether unknown is enabled. Returns the previous value of the setting.
+    ///
+    /// Enabled by default.
+    ///
+    /// When the parser's input string has locations where no entries can be found in the dictionary, the parser has to fill that location with unknown tokens. The unknown tokens are made by grouping up as many compatible characters as possible AND/OR grouping up every group of compatible characters from a length of 1 to a length of N. Whether either type of grouping is done (and how long the maximum prefix group is) is specified for each character in the unknown character data (usually char.bin).
+    ///
+    /// The unknown character data can also specify that certain character types always trigger grouping into unknown tokens, even if the given location in the input string can be found in a normal dictionary. Disabling this setting will override that data and cause the lattice builder to ONLY create unknown tokens when nothing can be found in a normal dictionary.
+    ///
+    /// If all unknown character processing fails for some reason, such as a defective unknown character data file, or one or both of the grouping modes being disabled, then problematic locations in the input string will create single-character unknown tokens.
+    ///
+    /// When enabled, the unknown character data's flag for forcing processing is observed. When disabled, it is ignored, and processing is never forced.
+    pub fn set_unk_forced_processing(&mut self, setting : bool) -> bool
+    {
+        let prev = self.use_unk_forced_processing;
+        self.use_unk_forced_processing = setting;
+        prev
+    }
+    /// Set whether greedy grouping behavior is enabled. Returns the previous value of the setting.
+    ///
+    /// Enabled by default.
+    ///
+    /// When enabled, problematic locations in the input string will (if specified in the unknown character data) be greedily grouped into an unknown token, covering all compatible characters.
+    ///
+    /// Note that this does not prevent real words from being detected inside of the grouping, which means that greedy grouping does not necessarily override prefix grouping, and for some character types, the unknown character data will have both greedy grouping and prefix grouping enabled.
+    pub fn set_unk_greedy_grouping(&mut self, setting : bool) -> bool
+    {
+        let prev = self.use_unk_greedy_grouping;
+        self.use_unk_greedy_grouping = setting;
+        prev
+    }
+    /// Set whether greedy grouping behavior is enabled. Returns the previous value of the setting.
+    ///
+    /// Enabled by default. See the documentation for the other set_unk_ functions for an explanation of what unknown token prefix grouping is.
+    pub fn set_unk_prefix_grouping(&mut self, setting : bool) -> bool
+    {
+        let prev = self.use_unk_prefix_grouping;
+        self.use_unk_prefix_grouping = setting;
+        prev
     }
     pub fn load_user_dictionary<T : Read>(&mut self, userdic : &mut BufReader<T>) -> Result<(), &'static str>
     {
@@ -220,11 +280,16 @@ impl Dict {
     /// Returns the feature string belonging to a LexerToken. They are stored in a large byte buffer internally as copying them on each parse may be expensive.
     pub fn read_feature_string(&self, token : &LexerToken) -> Result<String, &'static str>
     {
-        match token.kind
+        self.read_feature_string_by_source(token.kind, token.feature_offset)
+    }
+    /// Calling this with values not taken from a real token is unsupported behavior.
+    pub fn read_feature_string_by_source(&self, kind : TokenType, offset : u32) -> Result<String, &'static str>
+    {
+        match kind
         {
-            TokenType::UNK => self.unk_dic.feature_get(token.feature_offset),
-            TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(token.feature_offset),
-            TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(token.feature_offset)),
+            TokenType::UNK => self.unk_dic.feature_get(offset),
+            TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(offset),
+            TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
         }
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
@@ -233,11 +298,11 @@ impl Dict {
         {
             panic!("disconnected nodes");
         }
-        if left.right_context > self.left_edges
+        if left.right_context >= self.left_edges
         {
             panic!("bad right_context");
         }
-        if right.left_context > self.right_edges
+        if right.left_context >= self.right_edges
         {
             panic!("bad left_context");
         }
@@ -260,11 +325,14 @@ impl Dict {
 fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len : usize) -> (Vec<LexerToken>, usize)
 {
     let mut offset = 0;
-    while match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
+    if dict.use_space_stripping
     {
-        offset += 1;
+        while match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
+        {
+            offset += 1;
+        }
+        start += offset;
     }
-    start += offset;
     
     let mut index_iter = text[start..].char_indices();
     let mut end = start;
@@ -315,9 +383,11 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
         }
     }
     
-    if dict.unk_data.always_process(first_char) || lattice_column.is_empty()
+    let start_type = &dict.unk_data.get_type(first_char);
+    if (dict.use_unk_greedy_grouping || dict.use_unk_prefix_grouping)
+       && ((dict.use_unk_forced_processing && dict.unk_data.always_process(first_char))
+           || lattice_column.is_empty())
     {
-        let start_type = &dict.unk_data.get_type(first_char);
         let mut unk_end = start;
         
         let mut unk_indices = vec!();
@@ -334,33 +404,56 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
             }
         }
         
-        if !unk_indices.is_empty()
+        if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
         {
-            if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
+            lattice_column.reserve(matching_tokens.len() * (start_type.prefix_group_len as usize + start_type.greedy_group as usize));
+            for token in matching_tokens
             {
-                lattice_column.reserve(matching_tokens.len() * (start_type.prefix_group_len as usize + start_type.greedy_group as usize));
-                for token in matching_tokens
+                if dict.use_unk_greedy_grouping && start_type.greedy_group
                 {
-                    if start_type.greedy_group
+                    lattice_column.push(LexerToken::from(token, start, unk_end, lattice_len, lattice_len+unk_end-start+offset, TokenType::UNK));
+                }
+                if dict.use_unk_prefix_grouping && start_type.prefix_group_len > 0
+                {
+                    for i in 0..start_type.prefix_group_len
                     {
-                        let end = *unk_indices.last().unwrap();
-                        lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
-                    }
-                    if start_type.prefix_group_len > 0
-                    {
-                        for i in 0..start_type.prefix_group_len
+                        if let Some(end) = unk_indices.get(i as usize)
                         {
-                            if let Some(end) = unk_indices.get(i as usize)
-                            {
-                                lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
-                            }
-                            else
-                            {
-                                break;
-                            }
+                            lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
+                        }
+                        else
+                        {
+                            break;
                         }
                     }
                 }
+            }
+        }
+    }
+    
+    if lattice_column.is_empty()
+    {
+        if let Some(default_tokens) = dict.unk_dic.dic_get(&start_type.name)
+        {
+            if let Some(first_token) = default_tokens.iter().next()
+            {
+                let first_char_len = first_char.len_utf8();
+                lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
+            }
+        }
+        if lattice_column.is_empty()
+        {
+            if let Some(default_tokens) = dict.unk_dic.dic_get("DEFAULT")
+            {
+                if let Some(first_token) = default_tokens.iter().next()
+                {
+                    let first_char_len = first_char.len_utf8();
+                    lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
+                }
+            }
+            if lattice_column.is_empty()
+            {
+                panic!("unknown chars dictionary has a broken DEFAULT token");
             }
         }
     }
@@ -536,6 +629,21 @@ mod tests {
         assert_parse(&dict, "飛行機", "飛行|機");
         dict.load_user_dictionary(&mut BufReader::new(File::open("data/userdict.csv").unwrap())).unwrap();
         assert_parse(&dict, "飛行機", "飛行機");
+        
+        // overrides
+        dict.set_space_stripping(false);
+        assert_parse(&dict, "a b", "a| |b");
+        
+        assert_parse(&dict, "噛噛", "噛噛");
+        dict.set_unk_prefix_grouping(false);
+        dict.set_unk_greedy_grouping(false);
+        assert_parse(&dict, "噛噛", "噛|噛");
+        dict.set_unk_prefix_grouping(true);
+        dict.set_unk_greedy_grouping(true);
+        
+        assert_parse(&dict, "programmprogram", "programmprogram");
+        dict.set_unk_forced_processing(false);
+        assert_parse(&dict, "programmprogram", "program|m|program");
     }
 }
 
