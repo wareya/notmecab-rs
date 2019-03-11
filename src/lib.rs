@@ -397,7 +397,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
         
         let do_greedy = dict.use_unk_greedy_grouping && start_type.greedy_group;
         let do_prefix = dict.use_unk_prefix_grouping && start_type.prefix_group_len > 0;
-        let prefix_len = if do_prefix { start_type.prefix_group_len } else { 0 } as usize;
+        let mut prefix_len = if do_prefix { start_type.prefix_group_len } else { 0 } as usize;
         
         // find possible split points and furthest allowed ending in advance
         let mut unk_indices = vec!();
@@ -418,6 +418,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
                 break;
             }
         }
+        prefix_len = std::cmp::min(prefix_len, unk_indices.len());
         
         if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
         {
@@ -428,16 +429,9 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
                 {
                     lattice_column.push(LexerToken::from(token, start, unk_end, lattice_len, lattice_len+unk_end-start+offset, TokenType::UNK));
                 }
-                for i in 0..prefix_len
+                for end in unk_indices[0..prefix_len].iter()
                 {
-                    if let Some(end) = unk_indices.get(i as usize)
-                    {
-                        lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
-                    }
-                    else
-                    {
-                        break;
-                    }
+                    lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
                 }
             }
         }
