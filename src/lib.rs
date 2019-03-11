@@ -331,14 +331,11 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
 {
     // skip spaces
     let mut offset = 0;
-    if dict.use_space_stripping
+    while dict.use_space_stripping && match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
     {
-        while match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
-        {
-            offset += 1;
-        }
-        start += offset;
+        offset += 1;
     }
+    start += offset;
     
     // find first character, make a BOS(EOS) column if there is none
     let mut index_iter = text[start..].char_indices();
@@ -446,31 +443,26 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
         }
     }
     
-    if lattice_column.is_empty()
+    let first_char_len = first_char.len_utf8();
+    let mut build_unknown_single = |name|
     {
-        if let Some(default_tokens) = dict.unk_dic.dic_get(&start_type.name)
-        {
-            if let Some(first_token) = default_tokens.iter().next()
-            {
-                let first_char_len = first_char.len_utf8();
-                lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
-            }
-        }
         if lattice_column.is_empty()
         {
-            if let Some(default_tokens) = dict.unk_dic.dic_get("DEFAULT")
+            if let Some(default_tokens) = dict.unk_dic.dic_get(name)
             {
                 if let Some(first_token) = default_tokens.iter().next()
                 {
-                    let first_char_len = first_char.len_utf8();
                     lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
                 }
             }
-            if lattice_column.is_empty()
-            {
-                panic!("unknown chars dictionary has a broken DEFAULT token");
-            }
         }
+    };
+    // build fallback token if appropriate
+    build_unknown_single(&start_type.name);
+    build_unknown_single("DEFAULT");
+    if lattice_column.is_empty()
+    {
+        panic!("unknown chars dictionary has a broken DEFAULT token");
     }
     
     (lattice_column, offset)
@@ -659,6 +651,9 @@ mod tests {
         assert_parse(&dict, "programmprogram", "programmprogram");
         dict.set_unk_forced_processing(false);
         assert_parse(&dict, "programmprogram", "program|m|program");
+        
+        // hentaigana
+        assert_parse(&dict, "𛁁", "𛁁");
     }
 }
 
