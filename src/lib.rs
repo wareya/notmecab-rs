@@ -333,11 +333,11 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
 {
     // skip spaces
     let mut offset = 0;
-    while dict.use_space_stripping && match text[start+offset..].chars().next() { Some(' ') | Some('\n') | Some('\r') => true, _ => false }
+    while dict.use_space_stripping && start < text.len() &&  match text[start..].chars().next() { Some(' ') => true, _ => false }
     {
         offset += 1;
+        start += 1;
     }
-    start += offset;
     
     // find first character, make a BOS(EOS) column if there is none
     let mut index_iter = text[start..].char_indices();
@@ -349,7 +349,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
             end += c.len_utf8();
             c
         }
-        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1)), offset)
+        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1+offset)), offset)
     };
     
     let mut substring : &str = &text[start..end];
@@ -472,7 +472,7 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
     
     let mut skip_until_after = 0;
     
-    for i in 0..text.len()
+    for i in 0..=text.len()
     {
         if i < skip_until_after || !text.is_char_boundary(i)
         {
@@ -516,7 +516,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let token_events : Vec<LexerToken> = result.0[1..result.0.len()].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
+        let token_events : Vec<LexerToken> = result.0[1..result.0.len()-1].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
         Some((token_events, result.1))
     }
     else
@@ -626,16 +626,14 @@ mod tests {
         
         // unknown character token stuff
         assert_parse(&dict, "噛", "噛");
-        assert_parse(&dict, "噛\n", "噛|");
-        
-        // user dictionary
-        assert_parse(&dict, "飛行機", "飛行|機");
-        dict.load_user_dictionary(&mut BufReader::new(File::open("data/userdict.csv").unwrap())).unwrap();
-        assert_parse(&dict, "飛行機", "飛行機");
+        assert_parse(&dict, "噛 ", "噛");
+        assert_parse(&dict, "噛\n", "噛|\n");
         
         // overrides
         dict.set_space_stripping(false);
         assert_parse(&dict, "a b", "a| |b");
+        dict.set_space_stripping(true);
+        assert_parse(&dict, "」   ", "」");
         
         assert_parse(&dict, "噛噛", "噛噛");
         dict.set_unk_prefix_grouping(false);
@@ -650,6 +648,11 @@ mod tests {
         
         // hentaigana
         assert_parse(&dict, "𛁁", "𛁁");
+        
+        // user dictionary
+        assert_parse(&dict, "飛行機", "飛行|機");
+        dict.load_user_dictionary(&mut BufReader::new(File::open("data/userdict.csv").unwrap())).unwrap();
+        assert_parse(&dict, "飛行機", "飛行機");
     }
 }
 
