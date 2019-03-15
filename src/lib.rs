@@ -1,6 +1,12 @@
+use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
+
+use std::cell::RefCell;
+use std::borrow::BorrowMut;
+
+use std::collections::HashMap;
 
 use std::str;
 
@@ -169,14 +175,18 @@ pub struct Dict {
     unk_dic : DartDict,
     unk_data : UnkChar,
     user_dic : Option<UserDict>,
-    left_edges : u16,
-    right_edges : u16,
-    connection_matrix : Vec<i16>, // 2d matrix encoded as 1d
     
     use_space_stripping : bool,
     use_unk_forced_processing : bool,
     use_unk_greedy_grouping : bool,
     use_unk_prefix_grouping : bool,
+    
+    left_edges : u16,
+    right_edges : u16,
+    matrix_cache : RefCell<HashMap<u32, i16>>,
+    matrix_cache_capacity : usize,
+    
+    reader : RefCell<BufReader<File>>
 }
 
 impl Dict {
@@ -187,19 +197,21 @@ impl Dict {
     /// Only supports UTF-8 mecab dictionaries with a version number of 0x66.
     ///
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
-    pub fn load<T : Read + Seek>(
-        sysdic : &mut BufReader<T>,
-        matrix : &mut BufReader<T>,
-        unkdic : &mut BufReader<T>,
-        unkchar : &mut BufReader<T>,
+    /// 
+    /// The given dictionary BufReader<File>s are kept open internally and feature strings are read from them in real time to keep down memory usage.
+    pub fn load (
+        sysdic : BufReader<File>,
+        unkdic : BufReader<File>,
+        mut matrix : BufReader<File>,
+        mut unkchar : BufReader<File>,
     ) -> Result<Dict, &'static str>
     {
         let sys_dic = load_mecab_dart_file(0xE1_17_21_81, sysdic)?;
         let unk_dic = load_mecab_dart_file(0xEF_71_9A_03, unkdic)?;
-        let unk_data = load_char_bin(unkchar)?;
+        let unk_data = load_char_bin(&mut unkchar)?;
         
-        let left_edges  = read_u16(matrix)?;
-        let right_edges = read_u16(matrix)?;
+        let left_edges  = read_u16(&mut matrix)?;
+        let right_edges = read_u16(&mut matrix)?;
         
         if sys_dic.left_contexts != left_edges as u32 || sys_dic.right_contexts != right_edges as u32
         {
@@ -207,21 +219,20 @@ impl Dict {
         }
         let connections = left_edges as u32 * right_edges as u32;
         
-        let mut connection_matrix : Vec<i16> = vec!(0; connections as usize);
-        read_i16_buffer(matrix, &mut connection_matrix)?;
-        
         Ok(Dict
         { sys_dic,
           unk_dic,
           unk_data,
           user_dic: None,
-          left_edges,
-          right_edges,
-          connection_matrix,
           use_space_stripping : true,
           use_unk_forced_processing : true,
           use_unk_greedy_grouping : true,
           use_unk_prefix_grouping : true,
+          left_edges,
+          right_edges,
+          matrix_cache : RefCell::new(HashMap::new()),
+          matrix_cache_capacity : 4_000_000,
+          reader : RefCell::new(matrix)
         })
     }
     /// Load a user dictionary, comma-separated fields where fields cannot contain commas and do not have surrounding quotes.
@@ -234,7 +245,7 @@ impl Dict {
         self.user_dic = Some(UserDict::load(userdic)?);
         Ok(())
     }
-    /// Returns the feature string belonging to a LexerToken. They are stored in a large byte buffer internally as copying them on each parse may be expensive.
+    /// Returns the feature string belonging to a LexerToken.
     pub fn read_feature_string(&self, token : &LexerToken) -> Result<String, &'static str>
     {
         self.read_feature_string_by_source(token.kind, token.feature_offset)
@@ -248,6 +259,35 @@ impl Dict {
             TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(offset),
             TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
         }
+    }
+    /// Sets the maximum cached number of connection cost matrix elements. The first max_capacity connection cost matrix accesses are cached in a hashmap for speed, the rest are read from disk in real time during parsing for reduced memory usage.
+    ///
+    /// Default is 4000000 (four million).
+    ///
+    /// You do not need to set this to anything low unless you're using a very memory-constrained platform and need memory usage to not grow (even though it's diminishing growth) as you continue parsing more and more text.
+    pub fn set_matrix_cache_capacity(&mut self, max_capacity : usize)
+    {
+        self.matrix_cache_capacity = max_capacity;
+    }
+    fn access_matrix(&self, left : u16, right : u16) -> i16
+    {
+        let location = left as u32 + self.left_edges as u32 * right as u32;
+        
+        let mut matrix = self.matrix_cache.borrow_mut();
+        
+        if let Some(cost) = matrix.get(&location)
+        {
+            return *cost;
+        }
+        
+        let mut reader = self.reader.borrow_mut();
+        reader.seek(std::io::SeekFrom::Start(4 + location as u64 * 2)).unwrap(); // 4 is for the two u16s at the beginning that specify the shape of the matrix
+        let cost = read_i16(&mut reader).unwrap();
+        if matrix.capacity() < self.matrix_cache_capacity
+        {
+            matrix.insert(location, cost);
+        }
+        cost
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
@@ -264,14 +304,7 @@ impl Dict {
             panic!("bad left_context");
         }
         
-        let connection_cost =
-        self.connection_matrix
-        [ left.right_context as usize 
-          + self.left_edges as usize
-            * right.left_context as usize
-        ];
-        
-        right.cost as i64 + connection_cost as i64
+        right.cost as i64 + self.access_matrix(left.right_context, right.left_context) as i64
     }
     fn may_contain(&self, find : &str) -> bool
     {
@@ -333,7 +366,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
 {
     // skip spaces
     let mut offset = 0;
-    while dict.use_space_stripping && start < text.len() &&  match text[start..].chars().next() { Some(' ') => true, _ => false }
+    while dict.use_space_stripping && start < text.len() && text[start..].chars().next() == Some(' ')
     {
         offset += 1;
         start += 1;
@@ -598,12 +631,12 @@ mod tests {
     {
         // you need to acquire a mecab dictionary and place these files here manually
         // These tests will probably fail if you use a different dictionary than me. That's normal. Different dicionaries parse differently.
-        let mut sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
-        let mut matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
-        let mut unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-        let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
+        let sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
+        let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
+        let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
+        let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
         
-        let mut dict = Dict::load(&mut sysdic, &mut matrix, &mut unkdic, &mut unkdef).unwrap();
+        let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
         
         // general nonbrokenness
         assert_parse(&dict,

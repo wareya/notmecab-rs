@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use std::fs::File;
 use std::io::BufReader;
+use std::io::BufRead;
 use std::io::Read;
 use std::io::Seek;
+
+use std::cell::RefCell;
 
 use super::file::*;
 use super::FormatToken;
@@ -105,12 +109,14 @@ fn collect_links_into_map(links : Vec<Link>) -> HashMap<String, DictInfo>
 
 #[derive(Debug)]
 pub (crate) struct DartDict {
-    pub(crate) dict: HashMap<String, DictInfo>,
-    pub(crate) tokens: Vec<FormatToken>,
-    pub(crate) contains_longer: HashSet<String>,
-    pub(crate) left_contexts: u32,
-    pub(crate) right_contexts: u32,
-    pub(crate) feature_bytes: Vec<u8>,
+    pub(crate) dict : HashMap<String, DictInfo>,
+    pub(crate) tokens : Vec<FormatToken>,
+    pub(crate) contains_longer : HashSet<String>,
+    pub(crate) left_contexts : u32,
+    pub(crate) right_contexts : u32,
+    feature_bytes_location : usize,
+    feature_bytes_count : usize,
+    reader : RefCell<BufReader<File>>
 }
 
 impl DartDict {
@@ -131,9 +137,13 @@ impl DartDict {
     }
     pub (crate) fn feature_get(&self, offset : u32) -> Result<String, &'static str>
     {
-        if (offset as usize) < self.feature_bytes.len()
+        if (offset as usize) < self.feature_bytes_count
         {
-            read_str_buffer(&self.feature_bytes[offset as usize..])
+            let mut vec = Vec::new();
+            let mut reader = self.reader.borrow_mut();
+            reader.seek(std::io::SeekFrom::Start(self.feature_bytes_location as u64 + offset as u64)).unwrap();
+            reader.read_until(0, &mut vec).ok();
+            read_str_buffer(&vec[..])
         }
         else
         {
@@ -142,47 +152,48 @@ impl DartDict {
     }
 }
 
-pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut BufReader<T>) -> Result<DartDict, &'static str>
+pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File>) -> Result<DartDict, &'static str>
 {
+    let dic_file : &mut BufReader<File> = &mut reader;
     // magic
-    let magic = read_u32(dic)?;
+    let magic = read_u32(dic_file)?;
     if magic != arg_magic
     {
-        return Err("not a mecab dic file or is a dic file of the wrong kind");
+        return Err("not a mecab dic_file dic_file or is a dic_file dic_file of the wrong kind");
     }
     
     // 0x04
-    let version = read_u32(dic)?;
+    let version = read_u32(dic_file)?;
     if version != 0x66
     {
         return Err("unsupported version");
     }
 
     // 0x08
-    seek_rel_4(dic)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
+    seek_rel_4(dic_file)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
     
-    read_u32(dic)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
+    read_u32(dic_file)?; // number of unique somethings; might be unique lexeme surfaces, might be feature strings, we don't need it
     // 0x10
-    // this information is duplicated in the matrix file and we will ensure that it is consistent
-    let left_contexts  = read_u32(dic)?;
-    let right_contexts = read_u32(dic)?;
+    // this information is duplicated in the matrix dic_file and we will ensure that it is consistent
+    let left_contexts  = read_u32(dic_file)?;
+    let right_contexts = read_u32(dic_file)?;
     
     // 0x18
-    let linkbytes = read_u32(dic)?; // number of bytes used to store the dual-array trie
+    let linkbytes = read_u32(dic_file)?; // number of bytes used to store the dual-array trie
     if linkbytes%8 != 0
     {
         return Err("dictionary broken: link table stored with number of bytes that is not a multiple of 8");
     }
-    let tokenbytes = read_u32(dic)?; // number of bytes used to store the list of tokens
+    let tokenbytes = read_u32(dic_file)?; // number of bytes used to store the list of tokens
     if tokenbytes%16 != 0
     {
         return Err("dictionary broken: token table stored with number of bytes that is not a multiple of 16");
     }
     // 0x20
-    let featurebytes = read_u32(dic)?; // number of bytes used to store the feature string pile
-    seek_rel_4(dic)?;
+    let featurebytes = read_u32(dic_file)?; // number of bytes used to store the feature string pile
+    seek_rel_4(dic_file)?;
     
-    let encoding = read_nstr(dic, 0x20)?;
+    let encoding = read_nstr(dic_file, 0x20)?;
     if encoding != "UTF-8"
     {
         return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
@@ -191,21 +202,16 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
     let mut links : Vec<Link> = Vec::with_capacity((linkbytes/8) as usize);
     for _i in 0..(linkbytes/8)
     {
-        links.push(Link::read(dic)?);
+        links.push(Link::read(dic_file)?);
     }
     
     let mut tokens : Vec<FormatToken> = Vec::with_capacity((tokenbytes/16) as usize);
     for _i in 0..(tokenbytes/16)
     {
-        tokens.push(FormatToken::read(dic, tokens.len() as u32)?);
+        tokens.push(FormatToken::read(dic_file, tokens.len() as u32)?);
     }
     
-    let mut feature_bytes : Vec<u8> = vec!(0; featurebytes as usize);
-    
-    if dic.read_exact(&mut feature_bytes).is_err()
-    {
-        return Err("IO error")
-    }
+    let feature_bytes_location = dic_file.seek(std::io::SeekFrom::Current(0)).unwrap() as usize;
     
     let dictionary = collect_links_into_map(links);
     
@@ -225,5 +231,14 @@ pub (crate) fn load_mecab_dart_file<T : Read + Seek>(arg_magic : u32, dic : &mut
         }
     }
     
-    Ok(DartDict{dict: dictionary, tokens, contains_longer, left_contexts, right_contexts, feature_bytes})
+    Ok(DartDict{
+        dict: dictionary,
+        tokens,
+        contains_longer,
+        left_contexts,
+        right_contexts,
+        feature_bytes_location,
+        feature_bytes_count : featurebytes as usize,
+        reader : RefCell::new(reader),
+    })
 }
