@@ -4,7 +4,6 @@ use std::io::Read;
 use std::io::Seek;
 
 use std::cell::RefCell;
-use std::borrow::BorrowMut;
 
 use std::collections::HashMap;
 
@@ -170,6 +169,33 @@ impl ParserToken {
     }
 }
 
+struct EdgeInfo {
+    matrix_cache : HashMap<u32, i16>,
+    
+    fast_edge_enabled : bool,
+    fast_edge_map_left : Vec<u16>,
+    fast_edge_map_right : Vec<u16>,
+    fast_edge_left_edges : usize,
+    fast_edge_matrix : Vec<i16>,
+    
+    reader : File,
+}
+
+impl EdgeInfo {
+    fn new(reader : BufReader<File>) -> EdgeInfo
+    {
+        EdgeInfo {
+            matrix_cache : HashMap::new(),
+            fast_edge_enabled : false,
+            fast_edge_map_left : Vec::new(),
+            fast_edge_map_right : Vec::new(),
+            fast_edge_left_edges : 0,
+            fast_edge_matrix : Vec::new(),
+            reader : reader.into_inner(),
+        }
+    }
+}
+
 pub struct Dict {
     sys_dic : DartDict,
     unk_dic : DartDict,
@@ -183,10 +209,8 @@ pub struct Dict {
     
     left_edges : u16,
     right_edges : u16,
-    matrix_cache : RefCell<HashMap<u32, i16>>,
-    matrix_cache_capacity : usize,
     
-    reader : RefCell<BufReader<File>>
+    matrix : RefCell<EdgeInfo>
 }
 
 impl Dict {
@@ -217,7 +241,6 @@ impl Dict {
         {
             return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
         }
-        let connections = left_edges as u32 * right_edges as u32;
         
         Ok(Dict
         { sys_dic,
@@ -230,9 +253,8 @@ impl Dict {
           use_unk_prefix_grouping : true,
           left_edges,
           right_edges,
-          matrix_cache : RefCell::new(HashMap::new()),
-          matrix_cache_capacity : 4_000_000,
-          reader : RefCell::new(matrix)
+          
+          matrix : RefCell::new(EdgeInfo::new(matrix))
         })
     }
     /// Load a user dictionary, comma-separated fields where fields cannot contain commas and do not have surrounding quotes.
@@ -260,33 +282,67 @@ impl Dict {
             TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
         }
     }
-    /// Sets the maximum cached number of connection cost matrix elements. The first max_capacity connection cost matrix accesses are cached in a hashmap for speed, the rest are read from disk in real time during parsing for reduced memory usage.
-    ///
-    /// Default is 4000000 (four million).
-    ///
-    /// You do not need to set this to anything low unless you're using a very memory-constrained platform and need memory usage to not grow (even though it's diminishing growth) as you continue parsing more and more text.
-    pub fn set_matrix_cache_capacity(&mut self, max_capacity : usize)
+    /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. Not documented. May be removed at any time for any reason.
+    pub fn prepare_fast_matrix_cache(&self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
     {
-        self.matrix_cache_capacity = max_capacity;
+        let mut matrix = self.matrix.borrow_mut();
+        
+        let mut left_map  = vec!(!0u16; self.left_edges  as usize);
+        let mut right_map = vec!(!0u16; self.right_edges as usize);
+        for (i, left) in fast_left_edges.iter().enumerate()
+        {
+            left_map[*left as usize] = i as u16;
+        }
+        for (i, right) in fast_right_edges.iter().enumerate()
+        {
+            right_map[*right as usize] = i as u16;
+        }
+        
+        let mut submatrix = vec!(0i16; fast_left_edges.len() * fast_right_edges.len());
+        for (y, right) in fast_right_edges.iter().enumerate()
+        {
+            let mut row = vec!(0i16; self.left_edges as usize);
+            let location = self.left_edges as u64 * *right as u64;
+            matrix.reader.seek(std::io::SeekFrom::Start(4 + location*2)).unwrap();
+            read_i16_buffer(&mut matrix.reader, &mut row).unwrap();
+            for (i, left) in fast_left_edges.iter().enumerate()
+            {
+                submatrix[y * fast_left_edges.len() + i] = row[*left as usize];
+            }
+        }
+        
+        matrix.fast_edge_enabled = true;
+        matrix.fast_edge_map_left  = left_map;
+        matrix.fast_edge_map_right = right_map;
+        matrix.fast_edge_left_edges = fast_left_edges.len();
+        matrix.fast_edge_matrix = submatrix;
     }
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
-        let location = left as u32 + self.left_edges as u32 * right as u32;
+        let mut matrix = self.matrix.borrow_mut();
         
-        let mut matrix = self.matrix_cache.borrow_mut();
+        if matrix.fast_edge_enabled
+        {
+            let new_left  = matrix.fast_edge_map_left [left  as usize];
+            let new_right = matrix.fast_edge_map_right[right as usize];
+            if new_left != !0u16 && new_right != !0u16
+            {
+                let loc = matrix.fast_edge_left_edges * new_right as usize + new_left as usize;
+                return matrix.fast_edge_matrix[loc];
+            }
+        }
         
-        if let Some(cost) = matrix.get(&location)
+        let location = self.left_edges as u32 * right as u32 + left as u32;
+        
+        if let Some(cost) = matrix.matrix_cache.get(&location)
         {
             return *cost;
         }
         
-        let mut reader = self.reader.borrow_mut();
-        reader.seek(std::io::SeekFrom::Start(4 + location as u64 * 2)).unwrap(); // 4 is for the two u16s at the beginning that specify the shape of the matrix
-        let cost = read_i16(&mut reader).unwrap();
-        if matrix.capacity() < self.matrix_cache_capacity
-        {
-            matrix.insert(location, cost);
-        }
+        // the 4 is for the two u16s at the beginning that specify the shape of the matrix
+        matrix.reader.seek(std::io::SeekFrom::Start(4 + location as u64*2)).unwrap();
+        let cost = read_i16(&mut matrix.reader).unwrap();
+        matrix.matrix_cache.insert(location, cost);
         cost
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
@@ -366,7 +422,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
 {
     // skip spaces
     let mut offset = 0;
-    while dict.use_space_stripping && start < text.len() && text[start..].chars().next() == Some(' ')
+    while dict.use_space_stripping && start < text.len() && text[start..].starts_with(' ')
     {
         offset += 1;
         start += 1;
@@ -626,6 +682,13 @@ mod tests {
         assert_eq!(split_up_string, truth);
     }
     
+    fn file_to_string(file : &mut File) -> String
+    {
+        let mut text = String::new();
+        file.read_to_string(&mut text).unwrap();
+        text
+    }
+    
     #[test]
     fn test_various()
     {
@@ -678,6 +741,7 @@ mod tests {
         assert_parse(&dict, "programmprogram", "programmprogram");
         dict.set_unk_forced_processing(false);
         assert_parse(&dict, "programmprogram", "program|m|program");
+        dict.set_unk_forced_processing(true);
         
         // hentaigana
         assert_parse(&dict, "𛁁", "𛁁");
@@ -686,6 +750,24 @@ mod tests {
         assert_parse(&dict, "飛行機", "飛行|機");
         dict.load_user_dictionary(&mut BufReader::new(File::open("data/userdict.csv").unwrap())).unwrap();
         assert_parse(&dict, "飛行機", "飛行機");
+        
+        
+        if let Ok(mut common_left_edge_file) = File::open("data/common_edges_left.txt")
+        {
+            if let Ok(mut common_right_edge_file) = File::open("data/common_edges_right.txt")
+            {
+                let fast_edges_left_text  = file_to_string(&mut common_left_edge_file);
+                let fast_edges_right_text = file_to_string(&mut common_right_edge_file);
+                let fast_edges_left  = fast_edges_left_text .lines().map(|x| x.parse::<u16>().unwrap()).collect::<Vec<_>>();
+                let fast_edges_right = fast_edges_right_text.lines().map(|x| x.parse::<u16>().unwrap()).collect::<Vec<_>>();
+                dict.prepare_fast_matrix_cache(fast_edges_left, fast_edges_right);
+                
+                assert_parse(&dict,
+                  "メタプログラミング (metaprogramming) とはプログラミング技法の一種で、ロジックを直接コーディングするのではなく、あるパターンをもったロジックを生成する高位ロジックによってプログラミングを行う方法、またその高位ロジックを定義する方法のこと。主に対象言語に埋め込まれたマクロ言語によって行われる。",
+                  "メタ|プログラミング|(|metaprogramming|)|と|は|プログラミング|技法|の|一種|で|、|ロジック|を|直接|コーディング|する|の|で|は|なく|、|ある|パターン|を|もっ|た|ロジック|を|生成|する|高位|ロジック|に|よっ|て|プログラミング|を|行う|方法|、|また|その|高位|ロジック|を|定義|する|方法|の|こと|。|主に|対象|言語|に|埋め込ま|れ|た|マクロ|言語|に|よっ|て|行わ|れる|。"
+                );
+            }
+        }
     }
 }
 

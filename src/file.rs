@@ -1,10 +1,9 @@
-use std::io::BufReader;
 use std::io::Read;
 
 extern crate byteorder;
 use byteorder::{LE, ReadBytesExt};
 
-pub (crate) fn read_i16<T : Read>(f : &mut BufReader<T>) -> Result<i16, &'static str>
+pub (crate) fn read_i16<T : Read>(f : &mut T) -> Result<i16, &'static str>
 {
     match f.read_i16::<LE>()
     {
@@ -12,7 +11,7 @@ pub (crate) fn read_i16<T : Read>(f : &mut BufReader<T>) -> Result<i16, &'static
         _ => Err("IO error")
     }
 }
-pub (crate) fn read_u16<T : Read>(f : &mut BufReader<T>) -> Result<u16, &'static str>
+pub (crate) fn read_u16<T : Read>(f : &mut T) -> Result<u16, &'static str>
 {
     match f.read_u16::<LE>()
     {
@@ -20,7 +19,7 @@ pub (crate) fn read_u16<T : Read>(f : &mut BufReader<T>) -> Result<u16, &'static
         _ => Err("IO error")
     }
 }
-pub (crate) fn read_u32<T : Read>(f : &mut BufReader<T>) -> Result<u32, &'static str>
+pub (crate) fn read_u32<T : Read>(f : &mut T) -> Result<u32, &'static str>
 {
     match f.read_u32::<LE>()
     {
@@ -29,7 +28,7 @@ pub (crate) fn read_u32<T : Read>(f : &mut BufReader<T>) -> Result<u32, &'static
     }
 }
 
-pub (crate) fn read_i16_buffer<T : Read>(f : &mut BufReader<T>, dst : &mut [i16]) -> Result<(), &'static str>
+pub (crate) fn read_i16_buffer<T : Read>(f : &mut T, dst : &mut [i16]) -> Result<(), &'static str>
 {
     match f.read_i16_into::<LE>(dst)
     {
@@ -48,7 +47,7 @@ fn trim_at_null(mystr : &[u8]) -> &[u8]
     &mystr[..nullpos]
 }
 
-pub (crate) fn read_nstr<T : Read>(f : &mut BufReader<T>, n : usize) -> Result<String, &'static str>
+pub (crate) fn read_nstr<T : Read>(f : &mut T, n : usize) -> Result<String, &'static str>
 {
     let mut buf = vec![0u8; n];
     
@@ -85,7 +84,7 @@ pub (crate) fn read_str_buffer(buf : &[u8]) -> Result<String, &'static str>
 }
 
 // this is way, WAY faster than seeking 4 bytes forward explicitly.
-pub (crate) fn seek_rel_4<T : Read>(f : &mut BufReader<T>) -> Result<(), &'static str>
+pub (crate) fn seek_rel_4<T : Read>(f : &mut T) -> Result<(), &'static str>
 {
     let mut bogus = [0u8; 4];
     match f.read_exact(&mut bogus)
