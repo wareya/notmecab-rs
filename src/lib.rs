@@ -5,11 +5,12 @@ use std::io::Seek;
 
 use std::cell::RefCell;
 
-use std::collections::HashMap;
-
 use std::str;
 
 extern crate pathfinding;
+
+extern crate hashbrown;
+use hashbrown::HashMap;
 
 mod file;
 mod dart;
@@ -84,9 +85,9 @@ pub struct LexerToken {
     /// Used internally during lattice pathfinding.
     pub cost : i64,
     
-    /// Location, in codepoints, of the surface of this LexerToken in the string it was parsed from.
+    /// Location, in bytes, of the surface of this LexerToken in the string it was parsed from.
     pub start : usize, 
-    /// Corresponding ending location, in codepoints. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one codepoint long)
+    /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one codepoint long)
     pub end   : usize,
     
     // Start point (inclusive) on lattice.
@@ -172,11 +173,13 @@ impl ParserToken {
 struct EdgeInfo {
     matrix_cache : HashMap<u32, i16>,
     
+    full_cache_enabled : bool,
+    
     fast_edge_enabled : bool,
     fast_edge_map_left : Vec<u16>,
     fast_edge_map_right : Vec<u16>,
     fast_edge_left_edges : usize,
-    fast_edge_matrix : Vec<i16>,
+    fast_matrix_cache : Vec<i16>,
     
     reader : File,
 }
@@ -186,11 +189,12 @@ impl EdgeInfo {
     {
         EdgeInfo {
             matrix_cache : HashMap::new(),
+            full_cache_enabled : false,
             fast_edge_enabled : false,
             fast_edge_map_left : Vec::new(),
             fast_edge_map_right : Vec::new(),
             fast_edge_left_edges : 0,
-            fast_edge_matrix : Vec::new(),
+            fast_matrix_cache : Vec::new(),
             reader : reader.into_inner(),
         }
     }
@@ -283,9 +287,16 @@ impl Dict {
         }
     }
     /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. Not documented. May be removed at any time for any reason.
+    ///
+    /// Does nothing if the prepare_full_matrix_cache has already been called.
     pub fn prepare_fast_matrix_cache(&self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
     {
         let mut matrix = self.matrix.borrow_mut();
+        
+        if matrix.full_cache_enabled
+        {
+            return;
+        }
         
         let mut left_map  = vec!(!0u16; self.left_edges  as usize);
         let mut right_map = vec!(!0u16; self.right_edges as usize);
@@ -315,11 +326,40 @@ impl Dict {
         matrix.fast_edge_map_left  = left_map;
         matrix.fast_edge_map_right = right_map;
         matrix.fast_edge_left_edges = fast_left_edges.len();
-        matrix.fast_edge_matrix = submatrix;
+        matrix.fast_matrix_cache = submatrix;
+    }
+    /// Load the entire connection matrix into memory. Suitable for small dictionaries, but is actually SLOWER than using prepare_fast_matrix_cache properly for extremely large dictionaries, like modern versions of unidic.
+    ///
+    /// Overrides prepare_fast_matrix_cache if it has been called before.
+    pub fn prepare_full_matrix_cache(&self)
+    {
+        let mut matrix = self.matrix.borrow_mut();
+        
+        matrix.matrix_cache = HashMap::new();
+        matrix.full_cache_enabled = true;
+        matrix.fast_edge_enabled = false;
+        matrix.fast_edge_map_left  = Vec::new();
+        matrix.fast_edge_map_right = Vec::new();
+        matrix.fast_edge_left_edges = 0;
+        matrix.fast_matrix_cache = Vec::new();
+        
+        let size = self.left_edges as usize * self.right_edges as usize;
+        let mut new_fast_cache = vec!(0; size);
+        
+        matrix.reader.seek(std::io::SeekFrom::Start(4)).unwrap();
+        read_i16_buffer(&mut matrix.reader, &mut new_fast_cache[..]).unwrap();
+        
+        matrix.fast_matrix_cache = new_fast_cache;
     }
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
         let mut matrix = self.matrix.borrow_mut();
+        
+        if matrix.full_cache_enabled
+        {
+            let loc = self.left_edges as usize * right as usize + left as usize;
+            return matrix.fast_matrix_cache[loc];
+        }
         
         if matrix.fast_edge_enabled
         {
@@ -328,7 +368,7 @@ impl Dict {
             if new_left != !0u16 && new_right != !0u16
             {
                 let loc = matrix.fast_edge_left_edges * new_right as usize + new_left as usize;
-                return matrix.fast_edge_matrix[loc];
+                return matrix.fast_matrix_cache[loc];
             }
         }
         
@@ -480,6 +520,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
     
     // build unknown tokens if appropriate
     let start_type = &dict.unk_data.get_type(first_char);
+    
     if (dict.use_unk_greedy_grouping || dict.use_unk_prefix_grouping)
        && ((dict.use_unk_forced_processing && dict.unk_data.always_process(first_char))
            || lattice_column.is_empty())
@@ -542,6 +583,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
             }
         }
     };
+    
     // build fallback token if appropriate
     build_unknown_single(&start_type.name);
     build_unknown_single("DEFAULT");
@@ -555,7 +597,7 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
 
 fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
 {
-    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(text.len()+2);
+    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(text.char_indices().count()+2);
     
     lattice.push(vec!(LexerToken::make_bos(0, 0, lattice.len(), lattice.len()+1)));
     
@@ -588,6 +630,8 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
     let lattice = build_lattice(dict, text);
+    
+    //let result : Option<(Vec<(usize, usize)>, i64)> = Some((vec!((0,0),(0,0)), 0));
     
     let result = pathfinding::directed::dijkstra::dijkstra(
         // start

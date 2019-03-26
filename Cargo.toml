@@ -22,6 +22,7 @@ doc = true
 [dependencies]
 byteorder = "1.2"
 pathfinding = "1.1"
+hashbrown = "0.1"
 
 [profile.bench]
 opt-level = 3
