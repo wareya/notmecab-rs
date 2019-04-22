@@ -1,3 +1,5 @@
+#![feature(bufreader_seek_relative)]
+
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
@@ -84,10 +86,12 @@ pub struct LexerToken {
     pos  : u16,
     /// Used internally during lattice pathfinding.
     pub cost : i64,
+    /// Cost updated to include right-edge connection cost after parsing.
+    pub real_cost : i64, 
     
     /// Location, in bytes, of the surface of this LexerToken in the string it was parsed from.
     pub start : usize, 
-    /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one codepoint long)
+    /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one byte long)
     pub end   : usize,
     
     // Start point (inclusive) on lattice.
@@ -114,6 +118,7 @@ impl LexerToken {
           right_context : other.right_context,
           pos : other.pos,
           cost : other.cost,
+          real_cost : 0,
           original_id : other.original_id,
           feature_offset : other.feature_offset,
           start,
@@ -130,6 +135,7 @@ impl LexerToken {
           right_context : 0,
           pos : 0,
           cost : 0,
+          real_cost : 0,
           original_id : 0,
           feature_offset : 0,
           start,
@@ -182,6 +188,8 @@ struct EdgeInfo {
     fast_matrix_cache : Vec<i16>,
     
     reader : File,
+    
+    reader_location : u64
 }
 
 impl EdgeInfo {
@@ -196,6 +204,7 @@ impl EdgeInfo {
             fast_edge_left_edges : 0,
             fast_matrix_cache : Vec::new(),
             reader : reader.into_inner(),
+            reader_location : 0,
         }
     }
 }
@@ -286,7 +295,7 @@ impl Dict {
             TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
         }
     }
-    /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. Not documented. May be removed at any time for any reason.
+    /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. "Undocumented". May be removed at any time for any reason.
     ///
     /// Does nothing if the prepare_full_matrix_cache has already been called.
     pub fn prepare_fast_matrix_cache(&self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
@@ -321,6 +330,8 @@ impl Dict {
                 submatrix[y * fast_left_edges.len() + i] = row[*left as usize];
             }
         }
+        let to = matrix.reader_location;
+        matrix.reader.seek(std::io::SeekFrom::Start(to)).unwrap();
         
         matrix.fast_edge_enabled = true;
         matrix.fast_edge_map_left  = left_map;
@@ -328,7 +339,7 @@ impl Dict {
         matrix.fast_edge_left_edges = fast_left_edges.len();
         matrix.fast_matrix_cache = submatrix;
     }
-    /// Load the entire connection matrix into memory. Suitable for small dictionaries, but is actually SLOWER than using prepare_fast_matrix_cache properly for extremely large dictionaries, like modern versions of unidic.
+    /// Load the entire connection matrix into memory. Suitable for small dictionaries, but is actually SLOWER than using prepare_fast_matrix_cache properly for extremely large dictionaries, like modern versions of unidic. "Undocumented".
     ///
     /// Overrides prepare_fast_matrix_cache if it has been called before.
     pub fn prepare_full_matrix_cache(&self)
@@ -348,6 +359,8 @@ impl Dict {
         
         matrix.reader.seek(std::io::SeekFrom::Start(4)).unwrap();
         read_i16_buffer(&mut matrix.reader, &mut new_fast_cache[..]).unwrap();
+        let to = matrix.reader_location;
+        matrix.reader.seek(std::io::SeekFrom::Start(to)).unwrap();
         
         matrix.fast_matrix_cache = new_fast_cache;
     }
@@ -380,8 +393,12 @@ impl Dict {
         }
         
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
-        matrix.reader.seek(std::io::SeekFrom::Start(4 + location as u64*2)).unwrap();
+        let target_location = 4 + location as u64*2;
+        //let delta = target_location as i64 - matrix.reader_location as i64;
+        //matrix.reader.seek_relative(delta).unwrap();
+        matrix.reader.seek(std::io::SeekFrom::Start(target_location)).unwrap();
         let cost = read_i16(&mut matrix.reader).unwrap();
+        matrix.reader_location = target_location + 2;
         matrix.matrix_cache.insert(location, cost);
         cost
     }
@@ -649,7 +666,16 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
     // convert result into callee-usable vector of parse tokens, tupled together with cost
     if let Some(result) = result
     {
-        let token_events : Vec<LexerToken> = result.0[1..result.0.len()-1].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
+        let mut token_events : Vec<LexerToken> = result.0[..].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
+        for i in 1..result.0.len()-1
+        {
+            let left = &token_events[i-1];
+            let right = &token_events[i];
+            let edge_cost =  dict.access_matrix(left.right_context, right.left_context);
+            token_events[i].real_cost = token_events[i].cost + edge_cost as i64;
+        }
+        token_events.pop();
+        token_events.remove(0);
         Some((token_events, result.1))
     }
     else

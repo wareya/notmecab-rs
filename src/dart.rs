@@ -116,7 +116,8 @@ pub (crate) struct DartDict {
     pub(crate) right_contexts : u32,
     feature_bytes_location : usize,
     feature_bytes_count : usize,
-    reader : RefCell<BufReader<File>>
+    reader : RefCell<BufReader<File>>,
+    feature_string_cache : RefCell<HashMap<u32, String>>
 }
 
 impl DartDict {
@@ -137,13 +138,28 @@ impl DartDict {
     }
     pub (crate) fn feature_get(&self, offset : u32) -> Result<String, &'static str>
     {
+        if let Some(cached) = self.feature_string_cache.borrow().get(&offset)
+        {
+            return Ok(cached.clone());
+        }
         if (offset as usize) < self.feature_bytes_count
         {
             let mut vec = Vec::new();
             let mut reader = self.reader.borrow_mut();
             reader.seek(std::io::SeekFrom::Start(self.feature_bytes_location as u64 + offset as u64)).unwrap();
             reader.read_until(0, &mut vec).ok();
-            read_str_buffer(&vec[..])
+            let ret = read_str_buffer(&vec[..]);
+            if ret.is_ok()
+            {
+                let ret = ret.unwrap();
+                let mut cache = self.feature_string_cache.borrow_mut();
+                cache.insert(offset, ret.clone());
+                Ok(ret)
+            }
+            else
+            {
+                ret
+            }
         }
         else
         {
@@ -240,5 +256,6 @@ pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File
         feature_bytes_location,
         feature_bytes_count : featurebytes as usize,
         reader : RefCell::new(reader),
+        feature_string_cache : RefCell::new(HashMap::new())
     })
 }

@@ -46,3 +46,5 @@ Notes:
 
 - This software is unusably slow if optimizations are disabled.
 - Cost rewriting is not performed when user dictionaries are loaded.
+- There are some cases where multiple parses tie for the lowest cost. It's not defined which parse gets chosen in these cases.
+- There are some cases where mecab failed to find an ideal parse, but notmecab-rs does. Notmecab-rs should never produce a parse that has a higher total cost than the parse that mecab gives. If it does, it indicates some underlying bug, and should be reported, please.
