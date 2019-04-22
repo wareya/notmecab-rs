@@ -650,7 +650,12 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
     
     //let result : Option<(Vec<(usize, usize)>, i64)> = Some((vec!((0,0),(0,0)), 0));
     
-    let result = pathfinding::directed::dijkstra::dijkstra(
+    // pathfinding's dijkstra implementation seems to be buggy and gives non-optimal parses in some situations.
+    // its astar implementation always produces an optimal parse, but it's a lot slower.
+    // FIXME: write my own dijkstra or astar implementation
+    
+    //let result = pathfinding::directed::dijkstra::dijkstra(
+    let result = pathfinding::directed::astar::astar(
         // start
         &(0usize, 0usize),
         // successors
@@ -658,6 +663,13 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
         {
             let left = &lattice[column][row];
             lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
+        },
+        // heuristic
+        |&(column, _)|
+        {
+            // this is just as good as a heuristic derived from real minimums on real data
+            let dist = lattice.len() as i64 - column as i64;
+            -66000*2*dist
         },
         // success
         |&(column, row)| lattice[column][row].lattice_end == lattice.len()
@@ -788,6 +800,12 @@ mod tests {
         assert_parse(&dict,
           "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
           "Lorem|i|p|s|u|m|d|o|l|o|r|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
+        );
+        
+        // string that is known to trigger problems with at least one buggy pathfinding algorithm notmecab used before
+        assert_parse(&dict,
+          "だっでおら、こんな、こんなにっ！飛車角のこと、好きなんだでっ！！！！！！",
+          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|で|っ|！|！|！|！|！|！"
         );
         
         // unknown character token stuff
