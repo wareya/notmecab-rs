@@ -270,7 +270,7 @@ impl Dict {
           matrix : RefCell::new(EdgeInfo::new(matrix))
         })
     }
-    /// Load a user dictionary, comma-separated fields where fields cannot contain commas and do not have surrounding quotes.
+    /// Load a user dictionary, comma-separated fields.
     ///
     /// The first four fields are the surface, left context ID, right context ID, and cost of the token.
     ///
