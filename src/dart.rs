@@ -210,7 +210,7 @@ pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File
     seek_rel_4(dic_file)?;
     
     let encoding = read_nstr(dic_file, 0x20)?;
-    if encoding != "UTF-8"
+    if encoding.to_lowercase() != "utf-8"
     {
         return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
     }
