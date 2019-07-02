@@ -1,8 +1,6 @@
 use hashbrown::HashMap;
 
-use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
 
 use super::file::*;
 
@@ -126,7 +124,7 @@ impl UnkChar {
     }
 }
 
-pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Result<UnkChar, &'static str>
+pub (crate) fn load_char_bin<T : Read>(file : &mut T) -> Result<UnkChar, &'static str>
 {
     let num_types = read_u32(file)?;
     let mut type_names = Vec::new();

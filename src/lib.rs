@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io::BufReader;
+use std::io::BufRead;
 use std::io::Read;
 use std::io::Seek;
 
@@ -37,7 +36,7 @@ pub (crate) struct FormatToken {
 }
 
 impl FormatToken {
-    fn read<T : Read + std::io::Seek>(sysdic : &mut BufReader<T>, original_id : u32) -> Result<FormatToken, &'static str>
+    fn read<T : Read + std::io::Seek>(sysdic : &mut T, original_id : u32) -> Result<FormatToken, &'static str>
     {
         let ret = FormatToken
         { left_context : read_u16(sysdic)?,
@@ -174,7 +173,7 @@ impl ParserToken {
     }
 }
 
-struct EdgeInfo {
+struct EdgeInfo<T: Read> {
     matrix_cache : HashMap<u32, i16>,
     
     full_cache_enabled : bool,
@@ -185,13 +184,13 @@ struct EdgeInfo {
     fast_edge_left_edges : usize,
     fast_matrix_cache : Vec<i16>,
     
-    reader : File,
+    reader : T,
     
     reader_location : u64
 }
 
-impl EdgeInfo {
-    fn new(reader : BufReader<File>) -> EdgeInfo
+impl<T: Read> EdgeInfo<T> {
+    fn new(reader : T) -> EdgeInfo<T>
     {
         EdgeInfo {
             matrix_cache : HashMap::new(),
@@ -201,7 +200,7 @@ impl EdgeInfo {
             fast_edge_map_right : Vec::new(),
             fast_edge_left_edges : 0,
             fast_matrix_cache : Vec::new(),
-            reader : reader.into_inner(),
+            reader,
             reader_location : 0,
         }
     }
@@ -221,8 +220,11 @@ pub struct Dict {
     left_edges : u16,
     right_edges : u16,
     
-    matrix : RefCell<EdgeInfo>
+    matrix : RefCell<EdgeInfo<Box<dyn BufReadSeek>>>
 }
+
+pub(crate) trait BufReadSeek : BufRead + Seek {}
+impl<T> BufReadSeek for T where T : BufRead + Seek {}
 
 impl Dict {
     /// Load sys.dic and matrix.bin files into memory and prepare the data that's stored in them to be used by the parser.
@@ -234,12 +236,16 @@ impl Dict {
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
     /// 
     /// The given dictionary BufReader<File>s are kept open internally and feature strings are read from them in real time to keep down memory usage.
-    pub fn load (
-        sysdic : BufReader<File>,
-        unkdic : BufReader<File>,
-        mut matrix : BufReader<File>,
-        mut unkchar : BufReader<File>,
+    pub fn load<A, B, C, D> (
+        sysdic : A,
+        unkdic : B,
+        mut matrix : C,
+        mut unkchar : D,
     ) -> Result<Dict, &'static str>
+        where A: BufRead + Seek + 'static,
+              B: BufRead + Seek + 'static,
+              C: BufRead + Seek + 'static,
+              D: BufRead + Seek + 'static
     {
         let sys_dic = load_mecab_dart_file(sysdic)?;
         let unk_dic = load_mecab_dart_file(unkdic)?;
@@ -265,7 +271,7 @@ impl Dict {
           left_edges,
           right_edges,
           
-          matrix : RefCell::new(EdgeInfo::new(matrix))
+          matrix : RefCell::new(EdgeInfo::new(Box::new(matrix)))
         })
     }
     /// Load a user dictionary, comma-separated fields.
@@ -273,7 +279,7 @@ impl Dict {
     /// The first four fields are the surface, left context ID, right context ID, and cost of the token.
     ///
     /// Everything past the fourth comma is treated as pure text and is the token's feature string. It is itself normally a list of comma-separated fields with the same format as the feature strings of the main mecab dictionary.
-    pub fn load_user_dictionary<T : Read>(&mut self, userdic : &mut BufReader<T>) -> Result<(), &'static str>
+    pub fn load_user_dictionary<T : BufRead>(&mut self, userdic : &mut T) -> Result<(), &'static str>
     {
         self.user_dic = Some(UserDict::load(userdic)?);
         Ok(())
@@ -727,6 +733,7 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    use std::io::BufReader;
     use super::*;
     
     // concatenate surface forms of parsertoken stream, with given comma between tokens
