@@ -161,7 +161,7 @@ mod tests {
         let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
         let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
         
-        dart::load_mecab_dart_file(0xEF_71_9A_03, unkdic).unwrap();
+        dart::load_mecab_dart_file(unkdic).unwrap();
         load_char_bin(&mut unkdef).unwrap();
     }
 }

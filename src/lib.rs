@@ -241,8 +241,8 @@ impl Dict {
         mut unkchar : BufReader<File>,
     ) -> Result<Dict, &'static str>
     {
-        let sys_dic = load_mecab_dart_file(0xE1_17_21_81, sysdic)?;
-        let unk_dic = load_mecab_dart_file(0xEF_71_9A_03, unkdic)?;
+        let sys_dic = load_mecab_dart_file(sysdic)?;
+        let unk_dic = load_mecab_dart_file(unkdic)?;
         let unk_data = load_char_bin(&mut unkchar)?;
         
         let left_edges  = read_u16(&mut matrix)?;

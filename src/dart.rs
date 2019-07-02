@@ -168,16 +168,12 @@ impl DartDict {
     }
 }
 
-pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File>) -> Result<DartDict, &'static str>
+pub (crate) fn load_mecab_dart_file(mut reader : BufReader<File>) -> Result<DartDict, &'static str>
 {
     let dic_file : &mut BufReader<File> = &mut reader;
     // magic
-    let magic = read_u32(dic_file)?;
-    if magic != arg_magic
-    {
-        return Err("not a mecab dic_file dic_file or is a dic_file dic_file of the wrong kind");
-    }
-    
+    seek_rel_4(dic_file)?;
+
     // 0x04
     let version = read_u32(dic_file)?;
     if version != 0x66
