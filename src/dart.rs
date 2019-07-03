@@ -1,8 +1,6 @@
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 
-use std::fs::File;
-use std::io::BufReader;
 use std::io::BufRead;
 use std::io::Read;
 use std::io::Seek;
@@ -19,7 +17,7 @@ pub (crate) struct Link {
 }
 
 impl Link {
-    pub (crate) fn read<T : Read>(sysdic : &mut BufReader<T>) -> Result<Link, &'static str>
+    pub (crate) fn read<T : Read>(sysdic : &mut T) -> Result<Link, &'static str>
     {
         Ok(Link{base : read_u32(sysdic)?, check : read_u32(sysdic)?})
     }
@@ -107,7 +105,6 @@ fn collect_links_into_map(links : Vec<Link>) -> HashMap<String, DictInfo>
     entries_to_tokens(collection)
 }
 
-#[derive(Debug)]
 pub (crate) struct DartDict {
     pub(crate) dict : HashMap<String, DictInfo>,
     pub(crate) tokens : Vec<FormatToken>,
@@ -116,7 +113,7 @@ pub (crate) struct DartDict {
     pub(crate) right_contexts : u32,
     feature_bytes_location : usize,
     feature_bytes_count : usize,
-    reader : RefCell<BufReader<File>>,
+    reader : RefCell<Box<dyn crate::BufReadSeek>>,
     feature_string_cache : RefCell<HashMap<u32, String>>
 }
 
@@ -168,16 +165,13 @@ impl DartDict {
     }
 }
 
-pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File>) -> Result<DartDict, &'static str>
+pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'static str>
+    where T: BufRead + Seek + 'static
 {
-    let dic_file : &mut BufReader<File> = &mut reader;
+    let dic_file = &mut reader;
     // magic
-    let magic = read_u32(dic_file)?;
-    if magic != arg_magic
-    {
-        return Err("not a mecab dic_file dic_file or is a dic_file dic_file of the wrong kind");
-    }
-    
+    seek_rel_4(dic_file)?;
+
     // 0x04
     let version = read_u32(dic_file)?;
     if version != 0x66
@@ -210,7 +204,7 @@ pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File
     seek_rel_4(dic_file)?;
     
     let encoding = read_nstr(dic_file, 0x20)?;
-    if encoding != "UTF-8"
+    if encoding.to_lowercase() != "utf-8"
     {
         return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
     }
@@ -255,7 +249,7 @@ pub (crate) fn load_mecab_dart_file(arg_magic : u32, mut reader : BufReader<File
         right_contexts,
         feature_bytes_location,
         feature_bytes_count : featurebytes as usize,
-        reader : RefCell::new(reader),
+        reader : RefCell::new(Box::new(reader)),
         feature_string_cache : RefCell::new(HashMap::new())
     })
 }

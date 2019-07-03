@@ -1,4 +1,3 @@
-use std::io::BufReader;
 use std::io::BufRead;
 use std::io::Read;
 
@@ -15,7 +14,7 @@ pub (crate) struct UserDict {
 }
 
 impl UserDict {
-    pub (crate) fn load<T : Read>(file : &mut BufReader<T>) -> Result<UserDict, &'static str>
+    pub (crate) fn load<T : Read + BufRead>(file : &mut T) -> Result<UserDict, &'static str>
     {
         let mut dict : HashMap<String, Vec<FormatToken>> = HashMap::new();
         let mut contains_longer = HashSet::new();
@@ -78,6 +77,7 @@ impl UserDict {
 #[cfg(test)]
 mod tests {
     use std::fs::File;
+    use std::io::BufReader;
     use super::*;
     
     #[test]

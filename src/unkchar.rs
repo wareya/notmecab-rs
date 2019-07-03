@@ -1,8 +1,6 @@
 use hashbrown::HashMap;
 
-use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
 
 use super::file::*;
 
@@ -126,7 +124,7 @@ impl UnkChar {
     }
 }
 
-pub (crate) fn load_char_bin<T : Read + Seek>(file : &mut BufReader<T>) -> Result<UnkChar, &'static str>
+pub (crate) fn load_char_bin<T : Read>(file : &mut T) -> Result<UnkChar, &'static str>
 {
     let num_types = read_u32(file)?;
     let mut type_names = Vec::new();
@@ -161,7 +159,7 @@ mod tests {
         let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
         let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
         
-        dart::load_mecab_dart_file(0xEF_71_9A_03, unkdic).unwrap();
+        dart::load_mecab_dart_file(unkdic).unwrap();
         load_char_bin(&mut unkdef).unwrap();
     }
 }
