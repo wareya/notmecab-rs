@@ -1,6 +1,6 @@
 [package]
 name = "notmecab"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["wareya <wareya@gmail.com>"]
 edition = "2018"
 exclude = [
