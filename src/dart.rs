@@ -1,12 +1,12 @@
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 
-use std::io::BufRead;
+use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
+use std::ops::Range;
 
-use std::cell::RefCell;
-
+use super::blob::*;
 use super::file::*;
 use super::FormatToken;
 
@@ -111,10 +111,8 @@ pub (crate) struct DartDict {
     pub(crate) contains_longer : HashSet<String>,
     pub(crate) left_contexts : u32,
     pub(crate) right_contexts : u32,
-    feature_bytes_location : usize,
-    feature_bytes_count : usize,
-    reader : RefCell<Box<dyn crate::BufReadSeek>>,
-    feature_string_cache : RefCell<HashMap<u32, String>>
+    feature_bytes_range : Range<usize>,
+    blob : Blob
 }
 
 impl DartDict {
@@ -133,41 +131,36 @@ impl DartDict {
             None
         }
     }
-    pub (crate) fn feature_get(&self, offset : u32) -> Result<String, &'static str>
+    pub (crate) fn feature_get(&self, offset : u32) -> &str
     {
-        if let Some(cached) = self.feature_string_cache.borrow().get(&offset)
-        {
-            return Ok(cached.clone());
-        }
-        if (offset as usize) < self.feature_bytes_count
-        {
-            let mut vec = Vec::new();
-            let mut reader = self.reader.borrow_mut();
-            reader.seek(std::io::SeekFrom::Start(self.feature_bytes_location as u64 + offset as u64)).unwrap();
-            reader.read_until(0, &mut vec).ok();
-            let ret = read_str_buffer(&vec[..]);
-            if ret.is_ok()
-            {
-                let ret = ret.unwrap();
-                let mut cache = self.feature_string_cache.borrow_mut();
-                cache.insert(offset, ret.clone());
-                Ok(ret)
+        let offset = offset as usize;
+        let feature_blob = &self.blob[self.feature_bytes_range.clone()];
+        let slice = match feature_blob.get(offset..) {
+            Some(slice) => slice,
+            None => {
+                // Out-of-range offset.
+                return "";
             }
-            else
-            {
-                ret
-            }
-        }
-        else
-        {
-            Ok("".to_string())
+        };
+
+        let length = slice.iter().copied().take_while(|&byte| byte != 0).count();
+        let slice = &slice[..length];
+
+        let is_at_char_boundary =
+            slice.is_empty() || (slice[0] as i8) >= -0x40;
+
+        assert!(is_at_char_boundary);
+
+        // This is safe since we checked that the whole feature blob is valid
+        // UTF-8 when we loaded the dictionary.
+        unsafe {
+            std::str::from_utf8_unchecked(slice)
         }
     }
 }
 
-pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'static str>
-    where T: BufRead + Seek + 'static
-{
+pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static str> {
+    let mut reader = Cursor::new(&blob);
     let dic_file = &mut reader;
     // magic
     seek_rel_4(dic_file)?;
@@ -200,7 +193,7 @@ pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'sta
         return Err("dictionary broken: token table stored with number of bytes that is not a multiple of 16");
     }
     // 0x20
-    let featurebytes = read_u32(dic_file)?; // number of bytes used to store the feature string pile
+    let feature_bytes_count = read_u32(dic_file)? as usize; // number of bytes used to store the feature string pile
     seek_rel_4(dic_file)?;
     
     let encoding = read_nstr(dic_file, 0x20)?;
@@ -222,7 +215,17 @@ pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'sta
     }
     
     let feature_bytes_location = dic_file.seek(std::io::SeekFrom::Current(0)).unwrap() as usize;
-    
+    let feature_bytes_range = feature_bytes_location..feature_bytes_location + feature_bytes_count;
+    let feature_slice = match blob.get(feature_bytes_range.clone()) {
+        Some(slice) => slice,
+        None => {
+            return Err("dictionary broken: invalid feature bytes range");
+        }
+    };
+    if std::str::from_utf8(feature_slice).is_err() {
+        return Err("dictionary broken: feature blob is not valid UTF-8");
+    }
+
     let dictionary = collect_links_into_map(links);
     
     let mut contains_longer = HashSet::new();
@@ -247,9 +250,7 @@ pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'sta
         contains_longer,
         left_contexts,
         right_contexts,
-        feature_bytes_location,
-        feature_bytes_count : featurebytes as usize,
-        reader : RefCell::new(Box::new(reader)),
-        feature_string_cache : RefCell::new(HashMap::new())
+        feature_bytes_range,
+        blob
     })
 }

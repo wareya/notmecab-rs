@@ -1,7 +1,5 @@
 notmecab-rs is a very basic mecab clone, designed only to do parsing, not training.
 
-notmecab-rs loads everything into memory, so it has higher memory requirements than mecab, which uses memory mapping for most things.
-
 This is meant to be used as a library by other tools such as frequency analyzers. Not directly by people.
 It also only works with UTF-8 dictionaries. (Stop using encodings other than UTF-8 for infrastructural software.)
 
@@ -15,22 +13,21 @@ Get unidic's sys.dic, matrix.bin, unk.dic, and char.bin and put them in data/. T
 
 notmecab performs significantly worse than mecab, but there are many cases where mecab fails to find the lowest-cost string of tokens, so I'm pretty sure that it's just cutting corners somewhere performance sensitive in its code.
 
-There are a couple difficult-to-use caching features designed to improve performance. By default, matrix costs will be cached in a hashmap. You can upload a matrix of connections between the most common connection edge types with ```prepare_fast_matrix_cache```, which is for extremely large dictionaries like modern versions of unidic, or you can load the entire matrix connection cache into memory with ```prepare_full_matrix_cache```, which is for small dictionaries like ipadic. Note that ```prepare_full_matrix_cache``` is actually slower than ```prepare_fast_matrix_cache``` for modern versions of unidic after long periods of pumping text through notmecab, though obviously ```prepare_full_matrix_cache``` is the best option for small dictionaries.
+There are a couple difficult-to-use caching features designed to improve performance. You can upload a matrix of connections between the most common connection edge types with ```prepare_fast_matrix_cache```, which is for extremely large dictionaries like modern versions of unidic, or you can load the entire matrix connection cache into memory with ```prepare_full_matrix_cache```, which is for small dictionaries like ipadic. Note that ```prepare_full_matrix_cache``` is actually slower than ```prepare_fast_matrix_cache``` for modern versions of unidic after long periods of pumping text through notmecab, though obviously ```prepare_full_matrix_cache``` is the best option for small dictionaries.
 
 There are no stability guarantees about the presence or behavior of ```prepare_fast_matrix_cache```, because it's very hacky and if I find a better way to do what it's doing then I'm going to remove it.
 
 # Example (from tests)
 
     // you need to acquire a mecab dictionary and place these files here manually
-    let sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
-    let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-    let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
-    let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
-    
+    let sysdic = Blob::open("data/sys.dic").unwrap();
+    let unkdic = Blob::open("data/unk.dic").unwrap();
+    let matrix = Blob::open("data/matrix.bin").unwrap();
+    let unkdef = Blob::open("data/char.bin").unwrap();
+
     let dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
 
-    let result = parse(&dict, &"これを持っていけ".to_string()).unwrap();
-
+    let result = parse(&dict, "これを持っていけ").unwrap();
     for token in &result.0
     {
         println!("{}", token.feature);

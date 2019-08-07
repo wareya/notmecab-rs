@@ -1,16 +1,12 @@
-use std::io::BufRead;
+use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
-
-use std::cell::RefCell;
 
 use std::str;
 
 extern crate pathfinding;
 
-extern crate hashbrown;
-use hashbrown::HashMap;
-
+mod blob;
 mod file;
 mod dart;
 mod unkchar;
@@ -20,6 +16,8 @@ use self::file::*;
 use self::dart::*;
 use self::unkchar::*;
 use self::userdict::*;
+
+pub use self::blob::Blob;
 
 #[derive(Clone)]
 #[derive(Debug)]
@@ -146,23 +144,23 @@ impl LexerToken {
 
 #[derive(Clone)]
 #[derive(Debug)]
-pub struct ParserToken {
+pub struct ParserToken<'text, 'dict> {
     /// Exact sequence of characters with which this token appeared in the string that was parsed.
-    pub surface : String,
+    pub surface : &'text str,
     /// Description of this token's features.
     ///
     /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
     ///
     /// The exact format of the feature string is dictionary-specific.
-    pub feature : String,
+    pub feature : &'dict str,
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
     /// Origin of token.
     pub kind : TokenType,
 }
 
-impl ParserToken {
-    fn build(surface : String, feature : String, original_id : u32, kind : TokenType) -> ParserToken
+impl<'text, 'dict> ParserToken<'text, 'dict> {
+    fn build(surface : &'text str, feature : &'dict str, original_id : u32, kind : TokenType) -> Self
     {
         ParserToken
         { surface,
@@ -173,9 +171,7 @@ impl ParserToken {
     }
 }
 
-struct EdgeInfo<T: Read> {
-    matrix_cache : HashMap<u32, i16>,
-    
+struct EdgeInfo {
     full_cache_enabled : bool,
     
     fast_edge_enabled : bool,
@@ -184,24 +180,20 @@ struct EdgeInfo<T: Read> {
     fast_edge_left_edges : usize,
     fast_matrix_cache : Vec<i16>,
     
-    reader : T,
-    
-    reader_location : u64
+    blob : Blob,
 }
 
-impl<T: Read> EdgeInfo<T> {
-    fn new(reader : T) -> EdgeInfo<T>
+impl EdgeInfo {
+    fn new(blob : Blob) -> EdgeInfo
     {
         EdgeInfo {
-            matrix_cache : HashMap::new(),
             full_cache_enabled : false,
             fast_edge_enabled : false,
             fast_edge_map_left : Vec::new(),
             fast_edge_map_right : Vec::new(),
             fast_edge_left_edges : 0,
             fast_matrix_cache : Vec::new(),
-            reader,
-            reader_location : 0,
+            blob
         }
     }
 }
@@ -220,11 +212,8 @@ pub struct Dict {
     left_edges : u16,
     right_edges : u16,
     
-    matrix : RefCell<EdgeInfo<Box<dyn BufReadSeek>>>
+    matrix : EdgeInfo
 }
-
-pub(crate) trait BufReadSeek : BufRead + Seek {}
-impl<T> BufReadSeek for T where T : BufRead + Seek {}
 
 impl Dict {
     /// Load sys.dic and matrix.bin files into memory and prepare the data that's stored in them to be used by the parser.
@@ -234,26 +223,21 @@ impl Dict {
     /// Only supports UTF-8 mecab dictionaries with a version number of 0x66.
     ///
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
-    /// 
-    /// The given dictionary BufReader<File>s are kept open internally and feature strings are read from them in real time to keep down memory usage.
-    pub fn load<A, B, C, D> (
-        sysdic : A,
-        unkdic : B,
-        mut matrix : C,
-        mut unkchar : D,
+    pub fn load(
+        sysdic : Blob,
+        unkdic : Blob,
+        matrix : Blob,
+        unkchar : Blob,
     ) -> Result<Dict, &'static str>
-        where A: BufRead + Seek + 'static,
-              B: BufRead + Seek + 'static,
-              C: BufRead + Seek + 'static,
-              D: BufRead + Seek + 'static
     {
         let sys_dic = load_mecab_dart_file(sysdic)?;
         let unk_dic = load_mecab_dart_file(unkdic)?;
-        let unk_data = load_char_bin(&mut unkchar)?;
-        
-        let left_edges  = read_u16(&mut matrix)?;
-        let right_edges = read_u16(&mut matrix)?;
-        
+        let unk_data = load_char_bin(&mut Cursor::new(unkchar))?;
+
+        let mut matrix_cursor = Cursor::new(matrix.as_ref());
+        let left_edges  = read_u16(&mut matrix_cursor)?;
+        let right_edges = read_u16(&mut matrix_cursor)?;
+
         if sys_dic.left_contexts != left_edges as u32 || sys_dic.right_contexts != right_edges as u32
         {
             return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
@@ -271,7 +255,7 @@ impl Dict {
           left_edges,
           right_edges,
           
-          matrix : RefCell::new(EdgeInfo::new(Box::new(matrix)))
+          matrix : EdgeInfo::new(matrix)
         })
     }
     /// Load a user dictionary, comma-separated fields.
@@ -279,32 +263,33 @@ impl Dict {
     /// The first four fields are the surface, left context ID, right context ID, and cost of the token.
     ///
     /// Everything past the fourth comma is treated as pure text and is the token's feature string. It is itself normally a list of comma-separated fields with the same format as the feature strings of the main mecab dictionary.
-    pub fn load_user_dictionary<T : BufRead>(&mut self, userdic : &mut T) -> Result<(), &'static str>
+    pub fn load_user_dictionary(&mut self, userdic : Blob) -> Result<(), &'static str>
     {
-        self.user_dic = Some(UserDict::load(userdic)?);
+        let mut userdic = Cursor::new(userdic);
+        self.user_dic = Some(UserDict::load(&mut userdic)?);
         Ok(())
     }
     /// Returns the feature string belonging to a LexerToken.
-    pub fn read_feature_string(&self, token : &LexerToken) -> Result<String, &'static str>
+    pub fn read_feature_string(&self, token : &LexerToken) -> &str
     {
         self.read_feature_string_by_source(token.kind, token.feature_offset)
     }
     /// Calling this with values not taken from a real token is unsupported behavior.
-    pub fn read_feature_string_by_source(&self, kind : TokenType, offset : u32) -> Result<String, &'static str>
+    pub fn read_feature_string_by_source(&self, kind : TokenType, offset : u32) -> &str
     {
         match kind
         {
             TokenType::UNK => self.unk_dic.feature_get(offset),
             TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(offset),
-            TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
+            TokenType::User => self.user_dic.as_ref().unwrap().feature_get(offset),
         }
     }
     /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. "Undocumented". May be removed at any time for any reason.
     ///
     /// Does nothing if the prepare_full_matrix_cache has already been called.
-    pub fn prepare_fast_matrix_cache(&self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
+    pub fn prepare_fast_matrix_cache(&mut self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
     {
-        let mut matrix = self.matrix.borrow_mut();
+        let mut matrix = &mut self.matrix;
         
         if matrix.full_cache_enabled
         {
@@ -327,16 +312,15 @@ impl Dict {
         {
             let mut row = vec!(0i16; self.left_edges as usize);
             let location = self.left_edges as u64 * *right as u64;
-            matrix.reader.seek(std::io::SeekFrom::Start(4 + location*2)).unwrap();
-            read_i16_buffer(&mut matrix.reader, &mut row).unwrap();
+            let mut reader = Cursor::new(&matrix.blob);
+            reader.seek(std::io::SeekFrom::Start(4 + location*2)).unwrap();
+            read_i16_buffer(&mut reader, &mut row).unwrap();
             for (i, left) in fast_left_edges.iter().enumerate()
             {
                 submatrix[y * fast_left_edges.len() + i] = row[*left as usize];
             }
         }
-        let to = matrix.reader_location;
-        matrix.reader.seek(std::io::SeekFrom::Start(to)).unwrap();
-        
+
         matrix.fast_edge_enabled = true;
         matrix.fast_edge_map_left  = left_map;
         matrix.fast_edge_map_right = right_map;
@@ -346,11 +330,10 @@ impl Dict {
     /// Load the entire connection matrix into memory. Suitable for small dictionaries, but is actually SLOWER than using prepare_fast_matrix_cache properly for extremely large dictionaries, like modern versions of unidic. "Undocumented".
     ///
     /// Overrides prepare_fast_matrix_cache if it has been called before.
-    pub fn prepare_full_matrix_cache(&self)
+    pub fn prepare_full_matrix_cache(&mut self)
     {
-        let mut matrix = self.matrix.borrow_mut();
-        
-        matrix.matrix_cache = HashMap::new();
+        let mut matrix = &mut self.matrix;
+
         matrix.full_cache_enabled = true;
         matrix.fast_edge_enabled = false;
         matrix.fast_edge_map_left  = Vec::new();
@@ -360,24 +343,22 @@ impl Dict {
         
         let size = self.left_edges as usize * self.right_edges as usize;
         let mut new_fast_cache = vec!(0; size);
-        
-        matrix.reader.seek(std::io::SeekFrom::Start(4)).unwrap();
-        read_i16_buffer(&mut matrix.reader, &mut new_fast_cache[..]).unwrap();
-        let to = matrix.reader_location;
-        matrix.reader.seek(std::io::SeekFrom::Start(to)).unwrap();
-        
+
+        let mut reader = Cursor::new(&matrix.blob);
+        reader.seek(std::io::SeekFrom::Start(4)).unwrap();
+        read_i16_buffer(&mut reader, &mut new_fast_cache[..]).unwrap();
+
         matrix.fast_matrix_cache = new_fast_cache;
     }
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
-        let mut matrix = self.matrix.borrow_mut();
-        
+        let matrix = &self.matrix;
         if matrix.full_cache_enabled
         {
             let loc = self.left_edges as usize * right as usize + left as usize;
             return matrix.fast_matrix_cache[loc];
         }
-        
+
         if matrix.fast_edge_enabled
         {
             let new_left  = matrix.fast_edge_map_left [left  as usize];
@@ -388,23 +369,13 @@ impl Dict {
                 return matrix.fast_matrix_cache[loc];
             }
         }
-        
+
         let location = self.left_edges as u32 * right as u32 + left as u32;
-        
-        if let Some(cost) = matrix.matrix_cache.get(&location)
-        {
-            return *cost;
-        }
-        
+
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
-        let target_location = 4 + location as u64*2;
-        //let delta = target_location as i64 - matrix.reader_location as i64;
-        //matrix.reader.seek_relative(delta).unwrap();
-        matrix.reader.seek(std::io::SeekFrom::Start(target_location)).unwrap();
-        let cost = read_i16(&mut matrix.reader).unwrap();
-        matrix.reader_location = target_location + 2;
-        matrix.matrix_cache.insert(location, cost);
-        cost
+        let offset = 4 + location as usize * 2;
+        let cost = &matrix.blob[offset..offset + 2];
+        i16::from_le_bytes([cost[0], cost[1]])
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
@@ -707,7 +678,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
 /// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
 /// 
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
+pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec<ParserToken<'text, 'dict>>, i64)>
 {
     let result = parse_to_lexertokens(dict, &text);
     // convert result into callee-usable vector of parse tokens, tupled together with cost
@@ -717,8 +688,8 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
         
         for token in result.0
         {
-            let surface : String = text[token.start..token.end].to_string();
-            let feature = dict.read_feature_string(&token).unwrap();
+            let surface = &text[token.start..token.end];
+            let feature = dict.read_feature_string(&token);
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
         }
         
@@ -733,9 +704,11 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
 #[cfg(test)]
 mod tests {
     use std::fs::File;
-    use std::io::BufReader;
     use super::*;
-    
+
+    fn assert_implements_sync<T>() where T: Sync {}
+    fn assert_implements_send<T>() where T: Send {}
+
     // concatenate surface forms of parsertoken stream, with given comma between tokens
     fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
     {
@@ -754,10 +727,10 @@ mod tests {
         ret
     }
     
-    fn assert_parse(dict : &Dict, input : &'static str, truth : &'static str)
+    fn assert_parse(dict : &Dict, input : &str, truth : &str)
     {
         println!("testing parse...");
-        let result = parse(dict, &input.to_string()).unwrap();
+        let result = parse(dict, input).unwrap();
         
         for token in &result.0
         {
@@ -779,12 +752,15 @@ mod tests {
     #[test]
     fn test_various()
     {
+        assert_implements_sync::<Dict>();
+        assert_implements_send::<Dict>();
+
         // you need to acquire a mecab dictionary and place these files here manually
         // These tests will probably fail if you use a different dictionary than me. That's normal. Different dicionaries parse differently.
-        let sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
-        let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-        let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
-        let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
+        let sysdic = Blob::open("data/sys.dic").unwrap();
+        let unkdic = Blob::open("data/unk.dic").unwrap();
+        let matrix = Blob::open("data/matrix.bin").unwrap();
+        let unkdef = Blob::open("data/char.bin").unwrap();
         
         let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
         
@@ -804,13 +780,13 @@ mod tests {
         // This test will CERTAINLY fail if you don't have the same mecab dictionary.
         assert_parse(&dict,
           "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-          "Lorem|i|p|s|u|m|d|o|l|o|r|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
+          "Lorem|ipsum|dolor|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
         );
         
         // string that is known to trigger problems with at least one buggy pathfinding algorithm notmecab used before
         assert_parse(&dict,
           "だっでおら、こんな、こんなにっ！飛車角のこと、好きなんだでっ！！！！！！",
-          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|で|っ|！|！|！|！|！|！"
+          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|でっ|！|！|！|！|！|！"
         );
         
         // unknown character token stuff
@@ -841,7 +817,7 @@ mod tests {
         
         // user dictionary
         assert_parse(&dict, "飛行機", "飛行|機");
-        dict.load_user_dictionary(&mut BufReader::new(File::open("data/userdict.csv").unwrap())).unwrap();
+        dict.load_user_dictionary(Blob::open("data/userdict.csv").unwrap()).unwrap();
         assert_parse(&dict, "飛行機", "飛行機");
         
         

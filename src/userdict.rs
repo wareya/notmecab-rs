@@ -68,9 +68,9 @@ impl UserDict {
     {
         self.dict.get(find)
     }
-    pub (crate) fn feature_get(&self, offset : u32) -> String
+    pub (crate) fn feature_get(&self, offset : u32) -> &str
     {
-        self.features.get(offset as usize).cloned().unwrap_or_else(|| "".to_string())
+        self.features.get(offset as usize).map(|feature| feature.as_str()).unwrap_or("")
     }
 }
 
