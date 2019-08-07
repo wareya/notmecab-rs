@@ -7,11 +7,11 @@ Licensed under the Apache License, Version 2.0.
 
 # Testing
 
-Get unidic's sys.dic, matrix.bin, unk.dic, and char.bin and put them in data/. Then invoke tests from the repository root.
+Get unidic's sys.dic, matrix.bin, unk.dic, and char.bin and put them in data/. Then invoke tests from the repository root. Unidic 2.3.0 (spoken language or written language variant, not kobun etc) is assumed, otherwise some tests will fail.
 
 # Performance
 
-notmecab performs significantly worse than mecab, but there are many cases where mecab fails to find the lowest-cost string of tokens, so I'm pretty sure that it's just cutting corners somewhere performance sensitive in its code.
+notmecab performs significantly worse than mecab, but there are many cases where mecab fails to find the lowest-cost string of tokens, so I'm pretty sure that it's just cutting corners somewhere performance sensitive when searching for an ideal parse.
 
 There are a couple difficult-to-use caching features designed to improve performance. You can upload a matrix of connections between the most common connection edge types with ```prepare_fast_matrix_cache```, which is for extremely large dictionaries like modern versions of unidic, or you can load the entire matrix connection cache into memory with ```prepare_full_matrix_cache```, which is for small dictionaries like ipadic. Note that ```prepare_full_matrix_cache``` is actually slower than ```prepare_fast_matrix_cache``` for modern versions of unidic after long periods of pumping text through notmecab, though obviously ```prepare_full_matrix_cache``` is the best option for small dictionaries.
 
