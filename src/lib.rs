@@ -149,7 +149,7 @@ impl LexerToken {
 
 #[derive(Clone)]
 #[derive(Debug)]
-pub struct ParserToken {
+pub struct ParserToken<'a> {
     /// Exact sequence of characters with which this token appeared in the string that was parsed.
     pub surface : String,
     /// Description of this token's features.
@@ -157,15 +157,15 @@ pub struct ParserToken {
     /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
     ///
     /// The exact format of the feature string is dictionary-specific.
-    pub feature : String,
+    pub feature : &'a str,
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
     /// Origin of token.
     pub kind : TokenType,
 }
 
-impl ParserToken {
-    fn build(surface : String, feature : String, original_id : u32, kind : TokenType) -> ParserToken
+impl<'a> ParserToken<'a> {
+    fn build(surface : String, feature : &'a str, original_id : u32, kind : TokenType) -> ParserToken
     {
         ParserToken
         { surface,
@@ -278,18 +278,18 @@ impl Dict {
         Ok(())
     }
     /// Returns the feature string belonging to a LexerToken.
-    pub fn read_feature_string(&self, token : &LexerToken) -> Result<String, &'static str>
+    pub fn read_feature_string(&self, token : &LexerToken) -> &str
     {
         self.read_feature_string_by_source(token.kind, token.feature_offset)
     }
     /// Calling this with values not taken from a real token is unsupported behavior.
-    pub fn read_feature_string_by_source(&self, kind : TokenType, offset : u32) -> Result<String, &'static str>
+    pub fn read_feature_string_by_source(&self, kind : TokenType, offset : u32) -> &str
     {
         match kind
         {
             TokenType::UNK => self.unk_dic.feature_get(offset),
             TokenType::Normal | TokenType::BOS => self.sys_dic.feature_get(offset),
-            TokenType::User => Ok(self.user_dic.as_ref().unwrap().feature_get(offset)),
+            TokenType::User => self.user_dic.as_ref().unwrap().feature_get(offset),
         }
     }
     /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. "Undocumented". May be removed at any time for any reason.
@@ -696,7 +696,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
 /// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
 /// 
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
+pub fn parse<'a>(dict : &'a Dict, text : &str) -> Option<(Vec<ParserToken<'a>>, i64)>
 {
     let result = parse_to_lexertokens(dict, &text);
     // convert result into callee-usable vector of parse tokens, tupled together with cost
@@ -707,7 +707,7 @@ pub fn parse(dict : &Dict, text : &str) -> Option<(Vec<ParserToken>, i64)>
         for token in result.0
         {
             let surface : String = text[token.start..token.end].to_string();
-            let feature = dict.read_feature_string(&token).unwrap();
+            let feature = dict.read_feature_string(&token);
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
         }
         
