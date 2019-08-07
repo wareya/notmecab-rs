@@ -778,15 +778,31 @@ mod tests {
         
         // lorem ipsum
         // This test will CERTAINLY fail if you don't have the same mecab dictionary.
+        /*
+        // original version
         assert_parse(&dict,
           "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
           "Lorem|ipsum|dolor|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
         );
+        */
+        // version that should be agnostic w/r/t spoken language vs written language variants of unidic 2.3.0
+        assert_parse(&dict,
+          "Lorem sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+          "Lorem|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
+        );
         
         // string that is known to trigger problems with at least one buggy pathfinding algorithm notmecab used before
+        /*
+        // original version
         assert_parse(&dict,
           "だっでおら、こんな、こんなにっ！飛車角のこと、好きなんだでっ！！！！！！",
-          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|でっ|！|！|！|！|！|！"
+          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|で|っ|！|！|！|！|！|！"
+        );
+        */
+        // version that should be agnostic w/r/t spoken language vs written language variants of unidic 2.3.0
+        assert_parse(&dict,
+          "だっでおら、こんな、こんなにっ！飛車角のこと、好きなんだ！！！！！！",
+          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|！|！|！|！|！|！"
         );
         
         // unknown character token stuff
