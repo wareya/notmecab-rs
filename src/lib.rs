@@ -705,7 +705,10 @@ pub fn parse<'a>(dict : &'a Dict, text : &str) -> Option<(Vec<ParserToken<'a>>, 
 mod tests {
     use std::fs::File;
     use super::*;
-    
+
+    fn assert_implements_sync<T>() where T: Sync {}
+    fn assert_implements_send<T>() where T: Send {}
+
     // concatenate surface forms of parsertoken stream, with given comma between tokens
     fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
     {
@@ -749,6 +752,9 @@ mod tests {
     #[test]
     fn test_various()
     {
+        assert_implements_sync::<Dict>();
+        assert_implements_send::<Dict>();
+
         // you need to acquire a mecab dictionary and place these files here manually
         // These tests will probably fail if you use a different dictionary than me. That's normal. Different dicionaries parse differently.
         let sysdic = Blob::open("data/sys.dic").unwrap();
