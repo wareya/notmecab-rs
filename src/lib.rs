@@ -144,23 +144,23 @@ impl LexerToken {
 
 #[derive(Clone)]
 #[derive(Debug)]
-pub struct ParserToken<'a> {
+pub struct ParserToken<'text, 'dict> {
     /// Exact sequence of characters with which this token appeared in the string that was parsed.
-    pub surface : String,
+    pub surface : &'text str,
     /// Description of this token's features.
     ///
     /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
     ///
     /// The exact format of the feature string is dictionary-specific.
-    pub feature : &'a str,
+    pub feature : &'dict str,
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
     /// Origin of token.
     pub kind : TokenType,
 }
 
-impl<'a> ParserToken<'a> {
-    fn build(surface : String, feature : &'a str, original_id : u32, kind : TokenType) -> ParserToken
+impl<'text, 'dict> ParserToken<'text, 'dict> {
+    fn build(surface : &'text str, feature : &'dict str, original_id : u32, kind : TokenType) -> Self
     {
         ParserToken
         { surface,
@@ -678,7 +678,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
 /// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
 /// 
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse<'a>(dict : &'a Dict, text : &str) -> Option<(Vec<ParserToken<'a>>, i64)>
+pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec<ParserToken<'text, 'dict>>, i64)>
 {
     let result = parse_to_lexertokens(dict, &text);
     // convert result into callee-usable vector of parse tokens, tupled together with cost
@@ -688,7 +688,7 @@ pub fn parse<'a>(dict : &'a Dict, text : &str) -> Option<(Vec<ParserToken<'a>>, 
         
         for token in result.0
         {
-            let surface : String = text[token.start..token.end].to_string();
+            let surface = &text[token.start..token.end];
             let feature = dict.read_feature_string(&token);
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
         }
