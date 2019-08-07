@@ -727,10 +727,10 @@ mod tests {
         ret
     }
     
-    fn assert_parse(dict : &Dict, input : &'static str, truth : &'static str)
+    fn assert_parse(dict : &Dict, input : &str, truth : &str)
     {
         println!("testing parse...");
-        let result = parse(dict, &input.to_string()).unwrap();
+        let result = parse(dict, input).unwrap();
         
         for token in &result.0
         {
