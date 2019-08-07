@@ -8,9 +8,6 @@ use std::str;
 
 extern crate pathfinding;
 
-extern crate hashbrown;
-use hashbrown::HashMap;
-
 mod blob;
 mod file;
 mod dart;
@@ -177,8 +174,6 @@ impl<'a> ParserToken<'a> {
 }
 
 struct EdgeInfo {
-    matrix_cache : HashMap<u32, i16>,
-    
     full_cache_enabled : bool,
     
     fast_edge_enabled : bool,
@@ -194,7 +189,6 @@ impl EdgeInfo {
     fn new(blob : Blob) -> EdgeInfo
     {
         EdgeInfo {
-            matrix_cache : HashMap::new(),
             full_cache_enabled : false,
             fast_edge_enabled : false,
             fast_edge_map_left : Vec::new(),
@@ -341,8 +335,7 @@ impl Dict {
     pub fn prepare_full_matrix_cache(&self)
     {
         let mut matrix = self.matrix.borrow_mut();
-        
-        matrix.matrix_cache = HashMap::new();
+
         matrix.full_cache_enabled = true;
         matrix.fast_edge_enabled = false;
         matrix.fast_edge_map_left  = Vec::new();
@@ -361,14 +354,13 @@ impl Dict {
     }
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
-        let mut matrix = self.matrix.borrow_mut();
-        
+        let matrix = &self.matrix.borrow();
         if matrix.full_cache_enabled
         {
             let loc = self.left_edges as usize * right as usize + left as usize;
             return matrix.fast_matrix_cache[loc];
         }
-        
+
         if matrix.fast_edge_enabled
         {
             let new_left  = matrix.fast_edge_map_left [left  as usize];
@@ -379,21 +371,13 @@ impl Dict {
                 return matrix.fast_matrix_cache[loc];
             }
         }
-        
+
         let location = self.left_edges as u32 * right as u32 + left as u32;
-        
-        if let Some(cost) = matrix.matrix_cache.get(&location)
-        {
-            return *cost;
-        }
-        
+
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
-        let target_location = 4 + location as u64*2;
-        let mut reader = Cursor::new(&matrix.blob);
-        reader.seek(std::io::SeekFrom::Start(target_location)).unwrap();
-        let cost = read_i16(&mut reader).unwrap();
-        matrix.matrix_cache.insert(location, cost);
-        cost
+        let offset = 4 + location as usize * 2;
+        let cost = &matrix.blob[offset..offset + 2];
+        i16::from_le_bytes([cost[0], cost[1]])
     }
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
