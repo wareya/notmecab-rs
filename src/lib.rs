@@ -804,13 +804,13 @@ mod tests {
         // This test will CERTAINLY fail if you don't have the same mecab dictionary.
         assert_parse(&dict,
           "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-          "Lorem|i|p|s|u|m|d|o|l|o|r|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
+          "Lorem|ipsum|dolor|s|i|t|a|m|e|t|,|consectetur|adipiscing|elit|,|sed|do|eiusmod|tempor|incididunt|u|t|l|a|b|o|r|e|e|t|dolore|magna|aliqua|."
         );
         
         // string that is known to trigger problems with at least one buggy pathfinding algorithm notmecab used before
         assert_parse(&dict,
           "だっでおら、こんな、こんなにっ！飛車角のこと、好きなんだでっ！！！！！！",
-          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|で|っ|！|！|！|！|！|！"
+          "だっ|で|おら|、|こんな|、|こんな|に|っ|！|飛車|角|の|こと|、|好き|な|ん|だ|でっ|！|！|！|！|！|！"
         );
         
         // unknown character token stuff
