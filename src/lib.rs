@@ -1,3 +1,4 @@
+#![allow(clippy::suspicious_else_formatting)]
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -34,6 +35,7 @@ pub (crate) struct FormatToken {
 }
 
 impl FormatToken {
+    #[allow(clippy::cast_lossless)]
     fn read<T : Read + std::io::Seek>(sysdic : &mut T, original_id : u32) -> Result<FormatToken, &'static str>
     {
         let ret = FormatToken
@@ -223,6 +225,7 @@ impl Dict {
     /// Only supports UTF-8 mecab dictionaries with a version number of 0x66.
     ///
     /// Ensures that sys.dic and matrix.bin have compatible connection matrix sizes.
+    #[allow(clippy::cast_lossless)]
     pub fn load(
         sysdic : Blob,
         unkdic : Blob,
@@ -233,29 +236,29 @@ impl Dict {
         let sys_dic = load_mecab_dart_file(sysdic)?;
         let unk_dic = load_mecab_dart_file(unkdic)?;
         let unk_data = load_char_bin(&mut Cursor::new(unkchar))?;
-
+        
         let mut matrix_cursor = Cursor::new(matrix.as_ref());
         let left_edges  = read_u16(&mut matrix_cursor)?;
         let right_edges = read_u16(&mut matrix_cursor)?;
-
+        
         if sys_dic.left_contexts != left_edges as u32 || sys_dic.right_contexts != right_edges as u32
         {
             return Err("sys.dic and matrix.bin have inconsistent left/right edge counts");
         }
         
-        Ok(Dict
-        { sys_dic,
-          unk_dic,
-          unk_data,
-          user_dic: None,
-          use_space_stripping : true,
-          use_unk_forced_processing : true,
-          use_unk_greedy_grouping : true,
-          use_unk_prefix_grouping : true,
-          left_edges,
-          right_edges,
-          
-          matrix : EdgeInfo::new(matrix)
+        Ok(Dict {
+            sys_dic,
+            unk_dic,
+            unk_data,
+            user_dic: None,
+            use_space_stripping : true,
+            use_unk_forced_processing : true,
+            use_unk_greedy_grouping : true,
+            use_unk_prefix_grouping : true,
+            left_edges,
+            right_edges,
+            
+            matrix : EdgeInfo::new(matrix)
         })
     }
     /// Load a user dictionary, comma-separated fields.
@@ -287,6 +290,7 @@ impl Dict {
     /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. "Undocumented". May be removed at any time for any reason.
     ///
     /// Does nothing if the prepare_full_matrix_cache has already been called.
+    #[allow(clippy::cast_lossless)]
     pub fn prepare_fast_matrix_cache(&mut self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
     {
         let mut matrix = &mut self.matrix;
@@ -320,7 +324,7 @@ impl Dict {
                 submatrix[y * fast_left_edges.len() + i] = row[*left as usize];
             }
         }
-
+        
         matrix.fast_edge_enabled = true;
         matrix.fast_edge_map_left  = left_map;
         matrix.fast_edge_map_right = right_map;
@@ -333,7 +337,7 @@ impl Dict {
     pub fn prepare_full_matrix_cache(&mut self)
     {
         let mut matrix = &mut self.matrix;
-
+        
         matrix.full_cache_enabled = true;
         matrix.fast_edge_enabled = false;
         matrix.fast_edge_map_left  = Vec::new();
@@ -343,13 +347,14 @@ impl Dict {
         
         let size = self.left_edges as usize * self.right_edges as usize;
         let mut new_fast_cache = vec!(0; size);
-
+        
         let mut reader = Cursor::new(&matrix.blob);
         reader.seek(std::io::SeekFrom::Start(4)).unwrap();
         read_i16_buffer(&mut reader, &mut new_fast_cache[..]).unwrap();
-
+        
         matrix.fast_matrix_cache = new_fast_cache;
     }
+    #[allow(clippy::cast_lossless)]
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
         let matrix = &self.matrix;
@@ -358,7 +363,7 @@ impl Dict {
             let loc = self.left_edges as usize * right as usize + left as usize;
             return matrix.fast_matrix_cache[loc];
         }
-
+        
         if matrix.fast_edge_enabled
         {
             let new_left  = matrix.fast_edge_map_left [left  as usize];
@@ -369,14 +374,15 @@ impl Dict {
                 return matrix.fast_matrix_cache[loc];
             }
         }
-
+        
         let location = self.left_edges as u32 * right as u32 + left as u32;
-
+        
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
         let offset = 4 + location as usize * 2;
         let cost = &matrix.blob[offset..offset + 2];
         i16::from_le_bytes([cost[0], cost[1]])
     }
+    #[allow(clippy::cast_lossless)]
     fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
     {
         if left.lattice_end != right.lattice_start
@@ -654,6 +660,7 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
     if let Some(result) = result
     {
         let mut token_events : Vec<LexerToken> = result.0[..].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
+        #[allow(clippy::cast_lossless)]
         for i in 1..result.0.len()-1
         {
             let left = &token_events[i-1];
@@ -705,10 +712,10 @@ pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec
 mod tests {
     use std::fs::File;
     use super::*;
-
+    
     fn assert_implements_sync<T>() where T: Sync {}
     fn assert_implements_send<T>() where T: Send {}
-
+    
     // concatenate surface forms of parsertoken stream, with given comma between tokens
     fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
     {
@@ -754,7 +761,7 @@ mod tests {
     {
         assert_implements_sync::<Dict>();
         assert_implements_send::<Dict>();
-
+        
         // you need to acquire a mecab dictionary and place these files here manually
         // These tests will probably fail if you use a different dictionary than me. That's normal. Different dicionaries parse differently.
         let sysdic = Blob::open("data/sys.dic").unwrap();

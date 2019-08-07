@@ -142,15 +142,15 @@ impl DartDict {
                 return "";
             }
         };
-
+        
         let length = slice.iter().copied().take_while(|&byte| byte != 0).count();
         let slice = &slice[..length];
-
+        
         let is_at_char_boundary =
             slice.is_empty() || (slice[0] as i8) >= -0x40;
-
+        
         assert!(is_at_char_boundary);
-
+        
         // This is safe since we checked that the whole feature blob is valid
         // UTF-8 when we loaded the dictionary.
         unsafe {
@@ -164,14 +164,14 @@ pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static st
     let dic_file = &mut reader;
     // magic
     seek_rel_4(dic_file)?;
-
+    
     // 0x04
     let version = read_u32(dic_file)?;
     if version != 0x66
     {
         return Err("unsupported version");
     }
-
+    
     // 0x08
     seek_rel_4(dic_file)?; // dict type - u32 sys (0), usr (1), unk (2) - we don't care and have no use for the information
     
@@ -225,7 +225,7 @@ pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static st
     if std::str::from_utf8(feature_slice).is_err() {
         return Err("dictionary broken: feature blob is not valid UTF-8");
     }
-
+    
     let dictionary = collect_links_into_map(links);
     
     let mut contains_longer = HashSet::new();
@@ -244,7 +244,7 @@ pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static st
         }
     }
     
-    Ok(DartDict{
+    Ok(DartDict {
         dict: dictionary,
         tokens,
         contains_longer,

@@ -152,13 +152,13 @@ mod tests {
     use super::*;
     use crate::dart;
     use crate::blob::Blob;
-
+    
     #[test]
     fn test_unkchar_load()
     {
         let unkdic = Blob::open("data/unk.dic").unwrap();
         let unkdef = Blob::open("data/char.bin").unwrap();
-
+        
         dart::load_mecab_dart_file(unkdic).unwrap();
         load_char_bin(&mut Cursor::new(unkdef)).unwrap();
     }
