@@ -148,19 +148,19 @@ pub (crate) fn load_char_bin<T : Read>(file : &mut T) -> Result<UnkChar, &'stati
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::io::BufReader;
+    use std::io::Cursor;
     use super::*;
     use crate::dart;
-    
+    use crate::blob::Blob;
+
     #[test]
     fn test_unkchar_load()
     {
-        let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-        let mut unkdef = BufReader::new(File::open("data/char.bin").unwrap());
-        
+        let unkdic = Blob::open("data/unk.dic").unwrap();
+        let unkdef = Blob::open("data/char.bin").unwrap();
+
         dart::load_mecab_dart_file(unkdic).unwrap();
-        load_char_bin(&mut unkdef).unwrap();
+        load_char_bin(&mut Cursor::new(unkdef)).unwrap();
     }
 }
 

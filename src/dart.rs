@@ -2,11 +2,13 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 
 use std::io::BufRead;
+use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 
 use std::cell::RefCell;
 
+use super::blob::*;
 use super::file::*;
 use super::FormatToken;
 
@@ -113,7 +115,7 @@ pub (crate) struct DartDict {
     pub(crate) right_contexts : u32,
     feature_bytes_location : usize,
     feature_bytes_count : usize,
-    reader : RefCell<Box<dyn crate::BufReadSeek>>,
+    blob : Blob,
     feature_string_cache : RefCell<HashMap<u32, String>>
 }
 
@@ -142,7 +144,7 @@ impl DartDict {
         if (offset as usize) < self.feature_bytes_count
         {
             let mut vec = Vec::new();
-            let mut reader = self.reader.borrow_mut();
+            let mut reader = Cursor::new(&self.blob);
             reader.seek(std::io::SeekFrom::Start(self.feature_bytes_location as u64 + offset as u64)).unwrap();
             reader.read_until(0, &mut vec).ok();
             let ret = read_str_buffer(&vec[..]);
@@ -165,9 +167,8 @@ impl DartDict {
     }
 }
 
-pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'static str>
-    where T: BufRead + Seek + 'static
-{
+pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static str> {
+    let mut reader = Cursor::new(&blob);
     let dic_file = &mut reader;
     // magic
     seek_rel_4(dic_file)?;
@@ -249,7 +250,7 @@ pub (crate) fn load_mecab_dart_file<T>(mut reader : T) -> Result<DartDict, &'sta
         right_contexts,
         feature_bytes_location,
         feature_bytes_count : featurebytes as usize,
-        reader : RefCell::new(Box::new(reader)),
+        blob,
         feature_string_cache : RefCell::new(HashMap::new())
     })
 }
