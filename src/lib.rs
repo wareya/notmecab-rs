@@ -2,8 +2,6 @@ use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 
-use std::cell::RefCell;
-
 use std::str;
 
 extern crate pathfinding;
@@ -214,7 +212,7 @@ pub struct Dict {
     left_edges : u16,
     right_edges : u16,
     
-    matrix : RefCell<EdgeInfo>
+    matrix : EdgeInfo
 }
 
 impl Dict {
@@ -257,7 +255,7 @@ impl Dict {
           left_edges,
           right_edges,
           
-          matrix : RefCell::new(EdgeInfo::new(matrix))
+          matrix : EdgeInfo::new(matrix)
         })
     }
     /// Load a user dictionary, comma-separated fields.
@@ -289,9 +287,9 @@ impl Dict {
     /// Optional feature for applications that need to use as little memory as possible without accessing disk constantly. "Undocumented". May be removed at any time for any reason.
     ///
     /// Does nothing if the prepare_full_matrix_cache has already been called.
-    pub fn prepare_fast_matrix_cache(&self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
+    pub fn prepare_fast_matrix_cache(&mut self, fast_left_edges : Vec<u16>, fast_right_edges : Vec<u16>)
     {
-        let mut matrix = self.matrix.borrow_mut();
+        let mut matrix = &mut self.matrix;
         
         if matrix.full_cache_enabled
         {
@@ -332,9 +330,9 @@ impl Dict {
     /// Load the entire connection matrix into memory. Suitable for small dictionaries, but is actually SLOWER than using prepare_fast_matrix_cache properly for extremely large dictionaries, like modern versions of unidic. "Undocumented".
     ///
     /// Overrides prepare_fast_matrix_cache if it has been called before.
-    pub fn prepare_full_matrix_cache(&self)
+    pub fn prepare_full_matrix_cache(&mut self)
     {
-        let mut matrix = self.matrix.borrow_mut();
+        let mut matrix = &mut self.matrix;
 
         matrix.full_cache_enabled = true;
         matrix.fast_edge_enabled = false;
@@ -354,7 +352,7 @@ impl Dict {
     }
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
-        let matrix = &self.matrix.borrow();
+        let matrix = &self.matrix;
         if matrix.full_cache_enabled
         {
             let loc = self.left_edges as usize * right as usize + left as usize;
