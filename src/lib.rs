@@ -773,6 +773,16 @@ mod tests {
         
         // general nonbrokenness
         assert_parse(&dict,
+          "これ",
+          "これ"
+        );
+
+        assert_parse(&dict,
+          "これを",
+          "これ|を"
+        );
+
+        assert_parse(&dict,
           "これを持っていけ",
           "これ|を|持っ|て|いけ"
         );
