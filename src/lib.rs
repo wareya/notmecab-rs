@@ -2,6 +2,8 @@
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
+use std::ops::Range;
+use std::ops::Deref;
 
 use std::str;
 
@@ -12,6 +14,7 @@ mod file;
 mod dart;
 mod unkchar;
 mod userdict;
+mod pathing;
 
 use self::file::*;
 use self::dart::*;
@@ -618,6 +621,213 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
     lattice
 }
 
+#[derive(Debug)]
+struct Token<'a>
+{
+    rank : u32,
+    range : Range<usize>,
+    kind : TokenType,
+    format_token : &'a FormatToken
+}
+
+impl<'a> Token<'a> {
+    fn new(format_token : &'a FormatToken, rank : usize, range : Range<usize>, kind : TokenType) -> Self
+    {
+        Token {
+            rank : rank as u32,
+            range : range.start..range.end,
+            kind,
+            format_token
+        }
+    }
+}
+
+impl<'a> Deref for Token<'a>
+{
+    type Target = FormatToken;
+    fn deref(&self) -> &Self::Target
+    {
+        &self.format_token
+    }
+}
+
+impl<'a> From<&'a Token<'a>> for LexerToken
+{
+    fn from(token: &'a Token<'a>) -> Self
+    {
+        LexerToken
+        {
+            left_context : token.left_context,
+            right_context : token.right_context,
+            pos : token.pos,
+            cost : token.cost,
+            real_cost : 0,
+            start : token.range.start,
+            end : token.range.end,
+            lattice_start : 0,
+            lattice_end : 0,
+            kind : token.kind,
+            original_id : token.original_id,
+            feature_offset : token.feature_offset
+        }
+    }
+}
+
+fn generate_potential_tokens_at<'a>(dict : &'a Dict, text : &str, mut start : usize, output : &mut Vec<Token<'a>>) -> usize
+{
+    let initial_output_len = output.len();
+    let rank = start;
+
+    let space_count;
+    if dict.use_space_stripping
+    {
+        space_count = text[start..].bytes().take_while(|&byte| byte == b' ').count();
+        start += space_count;
+    }
+    else
+    {
+        space_count = 0;
+    }
+
+    let mut index_iter = text[start..].char_indices();
+    let mut end = start;
+    let first_char =
+        if let Some((_, c)) = index_iter.next()
+        {
+            end += c.len_utf8();
+            c
+        }
+        else
+        {
+            return space_count;
+        };
+
+    // find all tokens starting at this point in the string
+    loop
+    {
+        let substring : &str = &text[start..end];
+        if !dict.may_contain(&substring)
+        {
+            break;
+        }
+
+        if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
+        {
+            let tokens = matching_tokens.into_iter()
+                .map(|token| Token::new(token, rank, start..end, TokenType::Normal));
+            output.extend(tokens);
+
+        }
+        if let Some(matching_tokens) = dict.user_dic.as_ref().and_then(|user_dic| user_dic.dic_get(&substring))
+        {
+            let tokens = matching_tokens.into_iter()
+                .map(|token| Token::new(token, rank, start..end, TokenType::User));
+            output.extend(tokens);
+        }
+
+        if let Some((_, c)) = index_iter.next()
+        {
+            end += c.len_utf8();
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // build unknown tokens if appropriate
+    let start_type = &dict.unk_data.get_type(first_char);
+
+    if (dict.use_unk_greedy_grouping || dict.use_unk_prefix_grouping)
+       && ((dict.use_unk_forced_processing && dict.unk_data.always_process(first_char))
+           || output.len() == initial_output_len)
+    {
+        let mut unk_end = start;
+
+        let do_greedy = dict.use_unk_greedy_grouping && start_type.greedy_group;
+        let do_prefix = dict.use_unk_prefix_grouping && start_type.prefix_group_len > 0;
+        let mut prefix_len = if do_prefix { start_type.prefix_group_len } else { 0 } as usize;
+
+        // find possible split points and furthest allowed ending in advance
+        let mut unk_indices = vec!();
+        for (_, c) in text[start..].char_indices()
+        {
+            if dict.unk_data.has_type(c, start_type.number)
+            {
+                unk_end += c.len_utf8();
+                unk_indices.push(unk_end);
+                // stop building when necessary
+                if !do_greedy && unk_indices.len() >= prefix_len
+                {
+                    break;
+                }
+            }
+            else
+            {
+                break;
+            }
+        }
+        prefix_len = std::cmp::min(prefix_len, unk_indices.len());
+
+        if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
+        {
+            for token in matching_tokens
+            {
+                if do_greedy
+                {
+                    output.push(Token::new(token, rank, start..unk_end, TokenType::UNK));
+                }
+                for end in unk_indices[0..prefix_len].iter()
+                {
+                    output.push(Token::new(token, rank, start..*end, TokenType::UNK));
+                }
+            }
+        }
+    }
+
+    let first_char_len = first_char.len_utf8();
+    let mut build_unknown_single = |name|
+    {
+        if output.len() != initial_output_len
+        {
+            return;
+        }
+
+        if let Some(default_tokens) = dict.unk_dic.dic_get(name)
+        {
+            if let Some(first_token) = default_tokens.iter().next()
+            {
+                output.push(Token::new(first_token, rank, start..start + first_char_len, TokenType::UNK));
+            }
+        }
+    };
+
+    // build fallback token if appropriate
+    build_unknown_single(&start_type.name);
+    build_unknown_single("DEFAULT");
+    if output.len() == initial_output_len
+    {
+        panic!("unknown chars dictionary has a broken DEFAULT token");
+    }
+
+    space_count
+}
+
+fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec<Token<'a>>)
+{
+    let mut skip_until_after = 0;
+    for i in 0..=text.len()
+    {
+        if i < skip_until_after || !text.is_char_boundary(i)
+        {
+            continue;
+        }
+
+        let skipnext = generate_potential_tokens_at(dict, text, i, output);
+        skip_until_after = i+skipnext;
+    }
+}
+
 /// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
 ///
 /// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
@@ -670,12 +880,63 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
         }
         token_events.pop();
         token_events.remove(0);
-        Some((token_events, result.1))
+
+        // A sanity check that the new algorithm works the same.
+        //
+        // We don't check the tokens itself as those can differ
+        // when the costs for multiple paths are the same.
+        let (alt_token_events, alt_total_cost) = parse_to_lexertokens_fast(dict, text).unwrap();
+        assert_eq!(result.1, alt_total_cost);
+
+        Some((alt_token_events, result.1))
     }
     else
     {
+        assert!(parse_to_lexertokens_fast(dict, text).is_none());
         None
     }
+}
+
+fn parse_to_lexertokens_fast(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
+{
+    let mut cache = crate::pathing::Cache::new();
+    let mut tokens = Vec::new();
+    generate_potential_tokens(dict, text, &mut tokens);
+
+    let (path, total_cost) = crate::pathing::shortest_path(
+        &mut cache,
+        tokens.len(),
+        |index| tokens[index].rank as u32,
+        |index| tokens[index].range.end as u32,
+        |left, right| {
+            let right_token = &tokens[right];
+            let left_token = &tokens[left];
+            right_token.cost as i64 + dict.access_matrix(left_token.right_context, right_token.left_context) as i64
+        },
+        |index| {
+            let right_token = &tokens[index];
+            right_token.cost as i64 + dict.access_matrix(0, right_token.left_context) as i64
+        },
+        |index| dict.access_matrix(tokens[index].right_context, 0) as i64
+    );
+
+    if path.is_empty()
+    {
+        return None;
+    }
+
+    let mut lexer_tokens : Vec<LexerToken> =
+        path.iter().map(|&index| (&tokens[index as usize]).into()).collect();
+
+    for i in 0..lexer_tokens.len()
+    {
+        let left_context = if i == 0 { 0 } else { lexer_tokens[i - 1].right_context };
+        let right_context = lexer_tokens[i].left_context;
+        let edge_cost =  dict.access_matrix(left_context, right_context);
+        lexer_tokens[i].real_cost = lexer_tokens[i].cost + edge_cost as i64;
+    }
+
+    Some((lexer_tokens, total_cost))
 }
 
 /// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
