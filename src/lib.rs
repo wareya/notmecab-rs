@@ -7,8 +7,6 @@ use std::ops::Deref;
 
 use std::str;
 
-extern crate pathfinding;
-
 mod blob;
 mod file;
 mod dart;
@@ -93,12 +91,7 @@ pub struct LexerToken {
     pub start : usize, 
     /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one byte long)
     pub end   : usize,
-    
-    // Start point (inclusive) on lattice.
-    lattice_start : usize,
-    // End point (exclusive) on lattice.
-    lattice_end : usize,
-    
+
     /// Origin of token. BOS and UNK are virtual origins ("beginning/ending-of-string" and "unknown", respectively). Normal means it came from the mecab dictionary.
     ///
     /// The BOS (beginning/ending-of-string) tokens are stripped away in parse_to_lexertokens.
@@ -106,45 +99,8 @@ pub struct LexerToken {
     
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
-    
-    pub feature_offset : u32,
-}
 
-impl LexerToken {
-    fn from(other : & FormatToken, start : usize, end : usize, lattice_start : usize, lattice_end : usize, kind : TokenType) -> LexerToken
-    {
-        LexerToken
-        { left_context : other.left_context,
-          right_context : other.right_context,
-          pos : other.pos,
-          cost : other.cost,
-          real_cost : 0,
-          original_id : other.original_id,
-          feature_offset : other.feature_offset,
-          start,
-          end,
-          lattice_start,
-          lattice_end,
-          kind
-        }
-    }
-    fn make_bos(start : usize, end : usize, lattice_start : usize, lattice_end : usize) -> LexerToken
-    {
-        LexerToken
-        { left_context : 0, // context ID of EOS/BOS
-          right_context : 0,
-          pos : 0,
-          cost : 0,
-          real_cost : 0,
-          original_id : 0,
-          feature_offset : 0,
-          start,
-          end,
-          lattice_start,
-          lattice_end,
-          kind : TokenType::BOS
-        }
-    }
+    pub feature_offset : u32,
 }
 
 #[derive(Clone)]
@@ -377,31 +333,13 @@ impl Dict {
                 return matrix.fast_matrix_cache[loc];
             }
         }
-        
+
         let location = self.left_edges as u32 * right as u32 + left as u32;
-        
+
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
         let offset = 4 + location as usize * 2;
         let cost = &matrix.blob[offset..offset + 2];
         i16::from_le_bytes([cost[0], cost[1]])
-    }
-    #[allow(clippy::cast_lossless)]
-    fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
-    {
-        if left.lattice_end != right.lattice_start
-        {
-            panic!("disconnected nodes");
-        }
-        if left.right_context >= self.left_edges
-        {
-            panic!("bad right_context");
-        }
-        if right.left_context >= self.right_edges
-        {
-            panic!("bad left_context");
-        }
-        
-        right.cost as i64 + self.access_matrix(left.right_context, right.left_context) as i64
     }
     fn may_contain(&self, find : &str) -> bool
     {
@@ -459,168 +397,6 @@ impl Dict {
     }
 }
 
-fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len : usize) -> (Vec<LexerToken>, usize)
-{
-    // skip spaces
-    let mut offset = 0;
-    while dict.use_space_stripping && start < text.len() && text[start..].starts_with(' ')
-    {
-        offset += 1;
-        start += 1;
-    }
-    
-    // find first character, make a BOS(EOS) column if there is none
-    let mut index_iter = text[start..].char_indices();
-    let mut end = start;
-    let first_char = match index_iter.next()
-    {
-        Some((_, c)) =>
-        {
-            end += c.len_utf8();
-            c
-        }
-        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1+offset)), offset)
-    };
-    
-    let mut substring : &str = &text[start..end];
-    let mut lattice_column : Vec<LexerToken> = Vec::with_capacity(20);
-    
-    // find all tokens starting at this point in the string
-    while dict.may_contain(&substring)
-    {
-        if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
-        {
-            lattice_column.reserve(matching_tokens.len());
-            for token in matching_tokens
-            {
-                lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::Normal));
-            }
-        }
-        if let Some(user_dic) = &dict.user_dic
-        {
-            if let Some(matching_tokens) = user_dic.dic_get(&substring)
-            {
-                lattice_column.reserve(matching_tokens.len());
-                for token in matching_tokens
-                {
-                    lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::User));
-                }
-            }
-        }
-        
-        match index_iter.next()
-        {
-            Some((_, c)) =>
-            {
-                end += c.len_utf8();
-                substring = &text[start..end];
-            }
-            None => break
-        }
-    }
-    
-    // build unknown tokens if appropriate
-    let start_type = &dict.unk_data.get_type(first_char);
-    
-    if (dict.use_unk_greedy_grouping || dict.use_unk_prefix_grouping)
-       && ((dict.use_unk_forced_processing && dict.unk_data.always_process(first_char))
-           || lattice_column.is_empty())
-    {
-        let mut unk_end = start;
-        
-        let do_greedy = dict.use_unk_greedy_grouping && start_type.greedy_group;
-        let do_prefix = dict.use_unk_prefix_grouping && start_type.prefix_group_len > 0;
-        let mut prefix_len = if do_prefix { start_type.prefix_group_len } else { 0 } as usize;
-        
-        // find possible split points and furthest allowed ending in advance
-        let mut unk_indices = vec!();
-        for (_, c) in text[start..].char_indices()
-        {
-            if dict.unk_data.has_type(c, start_type.number)
-            {
-                unk_end += c.len_utf8();
-                unk_indices.push(unk_end);
-                // stop building when necessary
-                if !do_greedy && unk_indices.len() >= prefix_len
-                {
-                    break;
-                }
-            }
-            else
-            {
-                break;
-            }
-        }
-        prefix_len = std::cmp::min(prefix_len, unk_indices.len());
-        
-        if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
-        {
-            lattice_column.reserve(matching_tokens.len() * (start_type.prefix_group_len as usize + start_type.greedy_group as usize));
-            for token in matching_tokens
-            {
-                if do_greedy
-                {
-                    lattice_column.push(LexerToken::from(token, start, unk_end, lattice_len, lattice_len+unk_end-start+offset, TokenType::UNK));
-                }
-                for end in unk_indices[0..prefix_len].iter()
-                {
-                    lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
-                }
-            }
-        }
-    }
-    
-    let first_char_len = first_char.len_utf8();
-    let mut build_unknown_single = |name|
-    {
-        if lattice_column.is_empty()
-        {
-            if let Some(default_tokens) = dict.unk_dic.dic_get(name)
-            {
-                if let Some(first_token) = default_tokens.iter().next()
-                {
-                    lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
-                }
-            }
-        }
-    };
-    
-    // build fallback token if appropriate
-    build_unknown_single(&start_type.name);
-    build_unknown_single("DEFAULT");
-    if lattice_column.is_empty()
-    {
-        panic!("unknown chars dictionary has a broken DEFAULT token");
-    }
-    
-    (lattice_column, offset)
-}
-
-fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
-{
-    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(text.char_indices().count()+2);
-    
-    lattice.push(vec!(LexerToken::make_bos(0, 0, lattice.len(), lattice.len()+1)));
-    
-    let mut skip_until_after = 0;
-    
-    for i in 0..=text.len()
-    {
-        if i < skip_until_after || !text.is_char_boundary(i)
-        {
-            lattice.push(Vec::new());
-        }
-        else
-        {
-            let (column, skipnext) = build_lattice_column(dict, text, i, lattice.len());
-            skip_until_after = i+skipnext;
-            lattice.push(column);
-        }
-    }
-    
-    lattice
-}
-
 #[derive(Debug)]
 struct Token<'a>
 {
@@ -664,8 +440,6 @@ impl<'a> From<&'a Token<'a>> for LexerToken
             real_cost : 0,
             start : token.range.start,
             end : token.range.end,
-            lattice_start : 0,
-            lattice_end : 0,
             kind : token.kind,
             original_id : token.original_id,
             feature_offset : token.feature_offset
@@ -836,68 +610,6 @@ fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec
 ///
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
-{
-    let lattice = build_lattice(dict, text);
-    
-    //let result : Option<(Vec<(usize, usize)>, i64)> = Some((vec!((0,0),(0,0)), 0));
-    
-    // pathfinding's dijkstra implementation seems to be buggy and gives non-optimal parses in some situations.
-    // its astar implementation always produces an optimal parse, but it's a lot slower.
-    // FIXME: write my own dijkstra or astar implementation
-    
-    //let result = pathfinding::directed::dijkstra::dijkstra(
-    let result = pathfinding::directed::astar::astar(
-        // start
-        &(0usize, 0usize),
-        // successors
-        |&(column, row)|
-        {
-            let left = &lattice[column][row];
-            lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
-        },
-        // heuristic
-        |&(column, _)|
-        {
-            // this is just as good as a heuristic derived from real minimums on real data
-            let dist = lattice.len() as i64 - column as i64;
-            -66000*2*dist
-        },
-        // success
-        |&(column, row)| lattice[column][row].lattice_end == lattice.len()
-    );
-    
-    // convert result into callee-usable vector of parse tokens, tupled together with cost
-    if let Some(result) = result
-    {
-        let mut token_events : Vec<LexerToken> = result.0[..].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
-        #[allow(clippy::cast_lossless)]
-        for i in 1..result.0.len()-1
-        {
-            let left = &token_events[i-1];
-            let right = &token_events[i];
-            let edge_cost =  dict.access_matrix(left.right_context, right.left_context);
-            token_events[i].real_cost = token_events[i].cost + edge_cost as i64;
-        }
-        token_events.pop();
-        token_events.remove(0);
-
-        // A sanity check that the new algorithm works the same.
-        //
-        // We don't check the tokens itself as those can differ
-        // when the costs for multiple paths are the same.
-        let (alt_token_events, alt_total_cost) = parse_to_lexertokens_fast(dict, text).unwrap();
-        assert_eq!(result.1, alt_total_cost);
-
-        Some((alt_token_events, result.1))
-    }
-    else
-    {
-        assert!(parse_to_lexertokens_fast(dict, text).is_none());
-        None
-    }
-}
-
-fn parse_to_lexertokens_fast(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
     let mut cache = crate::pathing::Cache::new();
     let mut tokens = Vec::new();
