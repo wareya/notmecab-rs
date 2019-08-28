@@ -2,16 +2,17 @@
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
+use std::ops::Range;
+use std::ops::Deref;
 
 use std::str;
-
-extern crate pathfinding;
 
 mod blob;
 mod file;
 mod dart;
 mod unkchar;
 mod userdict;
+mod pathing;
 
 use self::file::*;
 use self::dart::*;
@@ -90,12 +91,7 @@ pub struct LexerToken {
     pub start : usize, 
     /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one byte long)
     pub end   : usize,
-    
-    // Start point (inclusive) on lattice.
-    lattice_start : usize,
-    // End point (exclusive) on lattice.
-    lattice_end : usize,
-    
+
     /// Origin of token. BOS and UNK are virtual origins ("beginning/ending-of-string" and "unknown", respectively). Normal means it came from the mecab dictionary.
     ///
     /// The BOS (beginning/ending-of-string) tokens are stripped away in parse_to_lexertokens.
@@ -103,45 +99,8 @@ pub struct LexerToken {
     
     /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
     pub original_id : u32,
-    
-    pub feature_offset : u32,
-}
 
-impl LexerToken {
-    fn from(other : & FormatToken, start : usize, end : usize, lattice_start : usize, lattice_end : usize, kind : TokenType) -> LexerToken
-    {
-        LexerToken
-        { left_context : other.left_context,
-          right_context : other.right_context,
-          pos : other.pos,
-          cost : other.cost,
-          real_cost : 0,
-          original_id : other.original_id,
-          feature_offset : other.feature_offset,
-          start,
-          end,
-          lattice_start,
-          lattice_end,
-          kind
-        }
-    }
-    fn make_bos(start : usize, end : usize, lattice_start : usize, lattice_end : usize) -> LexerToken
-    {
-        LexerToken
-        { left_context : 0, // context ID of EOS/BOS
-          right_context : 0,
-          pos : 0,
-          cost : 0,
-          real_cost : 0,
-          original_id : 0,
-          feature_offset : 0,
-          start,
-          end,
-          lattice_start,
-          lattice_end,
-          kind : TokenType::BOS
-        }
-    }
+    pub feature_offset : u32,
 }
 
 #[derive(Clone)]
@@ -374,31 +333,13 @@ impl Dict {
                 return matrix.fast_matrix_cache[loc];
             }
         }
-        
+
         let location = self.left_edges as u32 * right as u32 + left as u32;
-        
+
         // the 4 is for the two u16s at the beginning that specify the shape of the matrix
         let offset = 4 + location as usize * 2;
         let cost = &matrix.blob[offset..offset + 2];
         i16::from_le_bytes([cost[0], cost[1]])
-    }
-    #[allow(clippy::cast_lossless)]
-    fn calculate_cost(&self, left : &LexerToken, right : &LexerToken) -> i64
-    {
-        if left.lattice_end != right.lattice_start
-        {
-            panic!("disconnected nodes");
-        }
-        if left.right_context >= self.left_edges
-        {
-            panic!("bad right_context");
-        }
-        if right.left_context >= self.right_edges
-        {
-            panic!("bad left_context");
-        }
-        
-        right.cost as i64 + self.access_matrix(left.right_context, right.left_context) as i64
     }
     fn may_contain(&self, find : &str) -> bool
     {
@@ -456,79 +397,131 @@ impl Dict {
     }
 }
 
-fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len : usize) -> (Vec<LexerToken>, usize)
+#[derive(Debug)]
+struct Token<'a>
 {
-    // skip spaces
-    let mut offset = 0;
-    while dict.use_space_stripping && start < text.len() && text[start..].starts_with(' ')
+    rank : u32,
+    range : Range<usize>,
+    kind : TokenType,
+    format_token : &'a FormatToken
+}
+
+impl<'a> Token<'a> {
+    fn new(format_token : &'a FormatToken, rank : usize, range : Range<usize>, kind : TokenType) -> Self
     {
-        offset += 1;
-        start += 1;
+        Token {
+            rank : rank as u32,
+            range : range.start..range.end,
+            kind,
+            format_token
+        }
     }
-    
-    // find first character, make a BOS(EOS) column if there is none
+}
+
+impl<'a> Deref for Token<'a>
+{
+    type Target = FormatToken;
+    fn deref(&self) -> &Self::Target
+    {
+        &self.format_token
+    }
+}
+
+impl<'a> From<&'a Token<'a>> for LexerToken
+{
+    fn from(token: &'a Token<'a>) -> Self
+    {
+        LexerToken
+        {
+            left_context : token.left_context,
+            right_context : token.right_context,
+            pos : token.pos,
+            cost : token.cost,
+            real_cost : 0,
+            start : token.range.start,
+            end : token.range.end,
+            kind : token.kind,
+            original_id : token.original_id,
+            feature_offset : token.feature_offset
+        }
+    }
+}
+
+fn generate_potential_tokens_at<'a>(dict : &'a Dict, text : &str, mut start : usize, output : &mut Vec<Token<'a>>) -> usize
+{
+    let initial_output_len = output.len();
+    let rank = start;
+
+    let space_count;
+    if dict.use_space_stripping
+    {
+        space_count = text[start..].bytes().take_while(|&byte| byte == b' ').count();
+        start += space_count;
+    }
+    else
+    {
+        space_count = 0;
+    }
+
     let mut index_iter = text[start..].char_indices();
     let mut end = start;
-    let first_char = match index_iter.next()
-    {
-        Some((_, c)) =>
+    let first_char =
+        if let Some((_, c)) = index_iter.next()
         {
             end += c.len_utf8();
             c
         }
-        None => return (vec!(LexerToken::make_bos(0, 0, lattice_len, lattice_len+1+offset)), offset)
-    };
-    
-    let mut substring : &str = &text[start..end];
-    let mut lattice_column : Vec<LexerToken> = Vec::with_capacity(20);
-    
+        else
+        {
+            return space_count;
+        };
+
     // find all tokens starting at this point in the string
-    while dict.may_contain(&substring)
+    loop
     {
+        let substring : &str = &text[start..end];
+        if !dict.may_contain(&substring)
+        {
+            break;
+        }
+
         if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
         {
-            lattice_column.reserve(matching_tokens.len());
-            for token in matching_tokens
-            {
-                lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::Normal));
-            }
+            let tokens = matching_tokens.into_iter()
+                .map(|token| Token::new(token, rank, start..end, TokenType::Normal));
+            output.extend(tokens);
+
         }
-        if let Some(user_dic) = &dict.user_dic
+        if let Some(matching_tokens) = dict.user_dic.as_ref().and_then(|user_dic| user_dic.dic_get(&substring))
         {
-            if let Some(matching_tokens) = user_dic.dic_get(&substring)
-            {
-                lattice_column.reserve(matching_tokens.len());
-                for token in matching_tokens
-                {
-                    lattice_column.push(LexerToken::from(token, start, end, lattice_len, lattice_len+end-start+offset, TokenType::User));
-                }
-            }
+            let tokens = matching_tokens.into_iter()
+                .map(|token| Token::new(token, rank, start..end, TokenType::User));
+            output.extend(tokens);
         }
-        
-        match index_iter.next()
+
+        if let Some((_, c)) = index_iter.next()
         {
-            Some((_, c)) =>
-            {
-                end += c.len_utf8();
-                substring = &text[start..end];
-            }
-            None => break
+            end += c.len_utf8();
+        }
+        else
+        {
+            break;
         }
     }
-    
+
     // build unknown tokens if appropriate
     let start_type = &dict.unk_data.get_type(first_char);
-    
+
     if (dict.use_unk_greedy_grouping || dict.use_unk_prefix_grouping)
        && ((dict.use_unk_forced_processing && dict.unk_data.always_process(first_char))
-           || lattice_column.is_empty())
+           || output.len() == initial_output_len)
     {
         let mut unk_end = start;
-        
+
         let do_greedy = dict.use_unk_greedy_grouping && start_type.greedy_group;
         let do_prefix = dict.use_unk_prefix_grouping && start_type.prefix_group_len > 0;
         let mut prefix_len = if do_prefix { start_type.prefix_group_len } else { 0 } as usize;
-        
+
         // find possible split points and furthest allowed ending in advance
         let mut unk_indices = vec!();
         for (_, c) in text[start..].char_indices()
@@ -549,73 +542,64 @@ fn build_lattice_column(dict: &Dict, text : &str, mut start : usize, lattice_len
             }
         }
         prefix_len = std::cmp::min(prefix_len, unk_indices.len());
-        
+
         if let Some(matching_tokens) = dict.unk_dic.dic_get(&start_type.name)
         {
-            lattice_column.reserve(matching_tokens.len() * (start_type.prefix_group_len as usize + start_type.greedy_group as usize));
             for token in matching_tokens
             {
                 if do_greedy
                 {
-                    lattice_column.push(LexerToken::from(token, start, unk_end, lattice_len, lattice_len+unk_end-start+offset, TokenType::UNK));
+                    output.push(Token::new(token, rank, start..unk_end, TokenType::UNK));
                 }
                 for end in unk_indices[0..prefix_len].iter()
                 {
-                    lattice_column.push(LexerToken::from(token, start, *end, lattice_len, lattice_len+end-start+offset, TokenType::UNK));
+                    output.push(Token::new(token, rank, start..*end, TokenType::UNK));
                 }
             }
         }
     }
-    
+
     let first_char_len = first_char.len_utf8();
     let mut build_unknown_single = |name|
     {
-        if lattice_column.is_empty()
+        if output.len() != initial_output_len
         {
-            if let Some(default_tokens) = dict.unk_dic.dic_get(name)
+            return;
+        }
+
+        if let Some(default_tokens) = dict.unk_dic.dic_get(name)
+        {
+            if let Some(first_token) = default_tokens.iter().next()
             {
-                if let Some(first_token) = default_tokens.iter().next()
-                {
-                    lattice_column.push(LexerToken::from(first_token, start, start+first_char_len, lattice_len, lattice_len+first_char_len+offset, TokenType::UNK));
-                }
+                output.push(Token::new(first_token, rank, start..start + first_char_len, TokenType::UNK));
             }
         }
     };
-    
+
     // build fallback token if appropriate
     build_unknown_single(&start_type.name);
     build_unknown_single("DEFAULT");
-    if lattice_column.is_empty()
+    if output.len() == initial_output_len
     {
         panic!("unknown chars dictionary has a broken DEFAULT token");
     }
-    
-    (lattice_column, offset)
+
+    space_count
 }
 
-fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
+fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec<Token<'a>>)
 {
-    let mut lattice : Vec<Vec<LexerToken>> = Vec::with_capacity(text.char_indices().count()+2);
-    
-    lattice.push(vec!(LexerToken::make_bos(0, 0, lattice.len(), lattice.len()+1)));
-    
     let mut skip_until_after = 0;
-    
     for i in 0..=text.len()
     {
         if i < skip_until_after || !text.is_char_boundary(i)
         {
-            lattice.push(Vec::new());
+            continue;
         }
-        else
-        {
-            let (column, skipnext) = build_lattice_column(dict, text, i, lattice.len());
-            skip_until_after = i+skipnext;
-            lattice.push(column);
-        }
+
+        let skipnext = generate_potential_tokens_at(dict, text, i, output);
+        skip_until_after = i+skipnext;
     }
-    
-    lattice
 }
 
 /// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
@@ -627,55 +611,44 @@ fn build_lattice(dict : &Dict, text : &str) -> Vec<Vec<LexerToken>>
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
-    let lattice = build_lattice(dict, text);
-    
-    //let result : Option<(Vec<(usize, usize)>, i64)> = Some((vec!((0,0),(0,0)), 0));
-    
-    // pathfinding's dijkstra implementation seems to be buggy and gives non-optimal parses in some situations.
-    // its astar implementation always produces an optimal parse, but it's a lot slower.
-    // FIXME: write my own dijkstra or astar implementation
-    
-    //let result = pathfinding::directed::dijkstra::dijkstra(
-    let result = pathfinding::directed::astar::astar(
-        // start
-        &(0usize, 0usize),
-        // successors
-        |&(column, row)|
-        {
-            let left = &lattice[column][row];
-            lattice[left.lattice_end].iter().enumerate().map(move |(row, right)| ((left.lattice_end, row), dict.calculate_cost(left, right)))
+    let mut cache = crate::pathing::Cache::new();
+    let mut tokens = Vec::new();
+    generate_potential_tokens(dict, text, &mut tokens);
+
+    let (path, total_cost) = crate::pathing::shortest_path(
+        &mut cache,
+        tokens.len(),
+        |index| tokens[index].rank as u32,
+        |index| tokens[index].range.end as u32,
+        |left, right| {
+            let right_token = &tokens[right];
+            let left_token = &tokens[left];
+            right_token.cost as i64 + dict.access_matrix(left_token.right_context, right_token.left_context) as i64
         },
-        // heuristic
-        |&(column, _)|
-        {
-            // this is just as good as a heuristic derived from real minimums on real data
-            let dist = lattice.len() as i64 - column as i64;
-            -66000*2*dist
+        |index| {
+            let right_token = &tokens[index];
+            right_token.cost as i64 + dict.access_matrix(0, right_token.left_context) as i64
         },
-        // success
-        |&(column, row)| lattice[column][row].lattice_end == lattice.len()
+        |index| dict.access_matrix(tokens[index].right_context, 0) as i64
     );
-    
-    // convert result into callee-usable vector of parse tokens, tupled together with cost
-    if let Some(result) = result
+
+    if path.is_empty()
     {
-        let mut token_events : Vec<LexerToken> = result.0[..].iter().map(|(column, row)| lattice[*column][*row].clone()).collect();
-        #[allow(clippy::cast_lossless)]
-        for i in 1..result.0.len()-1
-        {
-            let left = &token_events[i-1];
-            let right = &token_events[i];
-            let edge_cost =  dict.access_matrix(left.right_context, right.left_context);
-            token_events[i].real_cost = token_events[i].cost + edge_cost as i64;
-        }
-        token_events.pop();
-        token_events.remove(0);
-        Some((token_events, result.1))
+        return None;
     }
-    else
+
+    let mut lexer_tokens : Vec<LexerToken> =
+        path.iter().map(|&index| (&tokens[index as usize]).into()).collect();
+
+    for i in 0..lexer_tokens.len()
     {
-        None
+        let left_context = if i == 0 { 0 } else { lexer_tokens[i - 1].right_context };
+        let right_context = lexer_tokens[i].left_context;
+        let edge_cost =  dict.access_matrix(left_context, right_context);
+        lexer_tokens[i].real_cost = lexer_tokens[i].cost + edge_cost as i64;
     }
+
+    Some((lexer_tokens, total_cost))
 }
 
 /// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
@@ -772,6 +745,16 @@ mod tests {
         let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
         
         // general nonbrokenness
+        assert_parse(&dict,
+          "これ",
+          "これ"
+        );
+
+        assert_parse(&dict,
+          "これを",
+          "これ|を"
+        );
+
         assert_parse(&dict,
           "これを持っていけ",
           "これ|を|持っ|て|いけ"
