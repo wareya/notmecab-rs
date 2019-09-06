@@ -1,5 +1,5 @@
-use hashbrown::HashMap;
-use hashbrown::HashSet;
+use crate::HashMap;
+use crate::HashSet;
 
 use std::io::Cursor;
 use std::io::Read;

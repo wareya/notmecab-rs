@@ -7,6 +7,16 @@ use std::ops::Deref;
 
 use std::str;
 
+#[cfg(not(feature = "hashbrown"))]
+pub(crate) use std::collections::HashMap;
+#[cfg(not(feature = "hashbrown"))]
+pub(crate) use std::collections::HashSet;
+
+#[cfg(feature = "hashbrown")]
+pub(crate) use hashbrown::HashMap;
+#[cfg(feature = "hashbrown")]
+pub(crate) use hashbrown::HashSet;
+
 mod blob;
 mod file;
 mod dart;

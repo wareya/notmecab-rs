@@ -21,8 +21,11 @@ doc = true
 
 [dependencies]
 byteorder = "1.2"
-hashbrown = "0.6"
+hashbrown = { version = "0.6", optional = true }
 memmap = "0.7"
+
+[features]
+default = ["hashbrown"]
 
 [profile.bench]
 opt-level = 3
