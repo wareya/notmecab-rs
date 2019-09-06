@@ -21,7 +21,7 @@ doc = true
 
 [dependencies]
 byteorder = "1.2"
-hashbrown = "0.5"
+hashbrown = "0.6"
 memmap = "0.7"
 
 [profile.bench]
