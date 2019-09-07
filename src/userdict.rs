@@ -1,8 +1,8 @@
 use std::io::BufRead;
 use std::io::Read;
 
-use hashbrown::HashMap;
-use hashbrown::HashSet;
+use crate::HashMap;
+use crate::HashSet;
 
 use crate::FormatToken;
 
