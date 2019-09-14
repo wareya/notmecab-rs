@@ -133,35 +133,6 @@ impl LexerToken {
     }
 }
 
-#[derive(Clone)]
-#[derive(Debug)]
-pub struct ParserToken<'text, 'dict> {
-    /// Exact sequence of characters with which this token appeared in the string that was parsed.
-    pub surface : &'text str,
-    /// Description of this token's features.
-    ///
-    /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
-    ///
-    /// The exact format of the feature string is dictionary-specific.
-    pub feature : &'dict str,
-    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
-    pub original_id : u32,
-    /// Origin of token.
-    pub kind : TokenType,
-}
-
-impl<'text, 'dict> ParserToken<'text, 'dict> {
-    fn build(surface : &'text str, feature : &'dict str, original_id : u32, kind : TokenType) -> Self
-    {
-        ParserToken
-        { surface,
-          feature,
-          original_id,
-          kind
-        }
-    }
-}
-
 struct EdgeInfo {
     full_cache_enabled : bool,
     
@@ -740,36 +711,6 @@ fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec
     }
 }
 
-/// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
-///
-/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
-/// 
-/// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
-/// 
-/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec<ParserToken<'text, 'dict>>, i64)>
-{
-    let result = dict.tokenize(&text);
-    // convert result into callee-usable vector of parse tokens, tupled together with cost
-    if let Ok(result) = result
-    {
-        let mut lexeme_events : Vec<ParserToken> = Vec::with_capacity(result.0.len());
-        
-        for token in result.0
-        {
-            let surface = &text[token.range.clone()];
-            let feature = dict.read_feature_string(&token);
-            lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
-        }
-        
-        Some((lexeme_events, result.1))
-    }
-    else
-    {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -779,7 +720,7 @@ mod tests {
     fn assert_implements_send<T>() where T: Send {}
     
     // concatenate surface forms of parsertoken stream, with given comma between tokens
-    fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
+    fn tokenstream_to_string(input : &str, stream : &Vec<LexerToken>, comma : &str) -> String
     {
         let mut ret = String::new();
         
@@ -790,7 +731,7 @@ mod tests {
             {
                 ret += comma;
             }
-            ret += &token.surface;
+            ret += token.get_text(input);
             first = false;
         }
         ret
@@ -799,13 +740,13 @@ mod tests {
     fn assert_parse(dict : &Dict, input : &str, truth : &str)
     {
         println!("testing parse...");
-        let result = parse(dict, input).unwrap();
+        let result = dict.tokenize(input).unwrap();
         
         for token in &result.0
         {
-            println!("{}", token.feature);
+            println!("{}", token.get_feature(dict));
         }
-        let split_up_string = tokenstream_to_string(&result.0, "|");
+        let split_up_string = tokenstream_to_string(input, &result.0, "|");
         println!("{}", split_up_string);
         
         assert_eq!(split_up_string, truth);
