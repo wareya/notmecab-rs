@@ -740,18 +740,6 @@ fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec
     }
 }
 
-/// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
-///
-/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
-///
-/// Returns a vector listing the LexerTokens on the chosen path and the cost the path took. Cost can be negative.
-///
-/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
-{
-    dict.tokenize(text).ok()
-}
-
 /// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
 ///
 /// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
@@ -761,9 +749,9 @@ pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec<ParserToken<'text, 'dict>>, i64)>
 {
-    let result = parse_to_lexertokens(dict, &text);
+    let result = dict.tokenize(&text);
     // convert result into callee-usable vector of parse tokens, tupled together with cost
-    if let Some(result) = result
+    if let Ok(result) = result
     {
         let mut lexeme_events : Vec<ParserToken> = Vec::with_capacity(result.0.len());
         
