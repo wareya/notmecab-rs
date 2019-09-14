@@ -169,6 +169,36 @@ impl EdgeInfo {
     }
 }
 
+/// A cache for internal allocations.
+pub struct Cache {
+    pathing_cache: crate::pathing::Cache,
+    tokens: Vec<Token<'static>>
+}
+
+impl Cache {
+    pub fn new() -> Self
+    {
+        Cache {
+            pathing_cache: crate::pathing::Cache::new(),
+            tokens: Vec::new()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TokenizeError {
+    _dummy: ()
+}
+
+impl std::fmt::Display for TokenizeError {
+    fn fmt(&self, fmt : &mut std::fmt::Formatter) -> std::fmt::Result
+    {
+        write!(fmt, "failed to tokenize the input")
+    }
+}
+
+impl std::error::Error for TokenizeError {}
+
 pub struct Dict {
     sys_dic : DartDict,
     unk_dic : DartDict,
@@ -323,6 +353,85 @@ impl Dict {
         
         matrix.fast_matrix_cache = new_fast_cache;
     }
+
+    /// Tokenizes a string by creating a lattice of possible tokens over it
+    /// and finding the lowest-cost path thought that lattice.
+    ///
+    /// See [`Dict::tokenize_with_cache`] for more details.
+    pub fn tokenize(&self, text : &str) -> Result<(Vec<LexerToken>, i64), TokenizeError>
+    {
+        let mut cache = Cache::new();
+        let mut tokens = Vec::new();
+        self.tokenize_with_cache(&mut cache, text, &mut tokens).map(|cost| (tokens, cost))
+    }
+
+    /// Tokenizes a string by creating a lattice of possible tokens over it
+    /// and finding the lowest-cost path thought that lattice.
+    ///
+    /// If successful the contents of `output` will be replaced with a list
+    /// of tokens and the total cost of the tokenization will be returned.
+    /// If unsuccessful the `output` will be cleared and a `None` will be returned.
+    ///
+    /// The dictionary itself defines what tokens exist, how they appear in
+    /// the string, their costs, and the costs of their possible connections.
+    ///
+    /// It's possible for multiple paths to tie for the lowest cost. It's not
+    /// defined which path is returned in that case.
+    ///
+    /// If you'll be calling this method multiple times you should reuse the
+    /// same `Cache` object across multiple invocations for increased efficiency.
+    pub fn tokenize_with_cache(&self, cache : &mut Cache, text : &str, output : &mut Vec<LexerToken>) -> Result<i64, TokenizeError>
+    {
+        fn take_memory<'a, 'b>(vec : &mut Vec<Token<'a>>) -> Vec<Token<'b>>
+        {
+            vec.clear();
+            // This is safe since we cleared the vector, so the inner lifetime doesn't matter.
+            let mut vec: &mut Vec<Token<'b>> = unsafe { std::mem::transmute(vec) };
+            let mut out = Vec::new();
+            std::mem::swap(&mut out, &mut vec);
+            out
+        }
+
+        let mut tokens = take_memory(&mut cache.tokens);
+        generate_potential_tokens(self, text, &mut tokens);
+
+        let (path, total_cost) = crate::pathing::shortest_path(
+            &mut cache.pathing_cache,
+            tokens.len(),
+            |index| tokens[index].rank as u32,
+            |index| tokens[index].range.end as u32,
+            |left, right| {
+                let right_token = &tokens[right];
+                let left_token = &tokens[left];
+                right_token.cost as i64 + self.access_matrix(left_token.right_context, right_token.left_context) as i64
+            },
+            |index| {
+                let right_token = &tokens[index];
+                right_token.cost as i64 + self.access_matrix(0, right_token.left_context) as i64
+            },
+            |index| self.access_matrix(tokens[index].right_context, 0) as i64
+        );
+
+        output.clear();
+        output.extend(path.iter().map(|&index| (&tokens[index as usize]).into()));
+
+        for i in 0..output.len()
+        {
+            let left_context = if i == 0 { 0 } else { output[i - 1].right_context };
+            let right_context = output[i].left_context;
+            let edge_cost =  self.access_matrix(left_context, right_context);
+            output[i].real_cost = output[i].cost + edge_cost as i64;
+        }
+
+        cache.tokens = take_memory(&mut tokens);
+        if path.is_empty()
+        {
+            return Err(TokenizeError { _dummy: () });
+        }
+
+        Ok(total_cost)
+    }
+
     #[allow(clippy::cast_lossless)]
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
@@ -621,44 +730,7 @@ fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec
 /// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
 pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
 {
-    let mut cache = crate::pathing::Cache::new();
-    let mut tokens = Vec::new();
-    generate_potential_tokens(dict, text, &mut tokens);
-
-    let (path, total_cost) = crate::pathing::shortest_path(
-        &mut cache,
-        tokens.len(),
-        |index| tokens[index].rank as u32,
-        |index| tokens[index].range.end as u32,
-        |left, right| {
-            let right_token = &tokens[right];
-            let left_token = &tokens[left];
-            right_token.cost as i64 + dict.access_matrix(left_token.right_context, right_token.left_context) as i64
-        },
-        |index| {
-            let right_token = &tokens[index];
-            right_token.cost as i64 + dict.access_matrix(0, right_token.left_context) as i64
-        },
-        |index| dict.access_matrix(tokens[index].right_context, 0) as i64
-    );
-
-    if path.is_empty()
-    {
-        return None;
-    }
-
-    let mut lexer_tokens : Vec<LexerToken> =
-        path.iter().map(|&index| (&tokens[index as usize]).into()).collect();
-
-    for i in 0..lexer_tokens.len()
-    {
-        let left_context = if i == 0 { 0 } else { lexer_tokens[i - 1].right_context };
-        let right_context = lexer_tokens[i].left_context;
-        let edge_cost =  dict.access_matrix(left_context, right_context);
-        lexer_tokens[i].real_cost = lexer_tokens[i].cost + edge_cost as i64;
-    }
-
-    Some((lexer_tokens, total_cost))
+    dict.tokenize(text).ok()
 }
 
 /// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
