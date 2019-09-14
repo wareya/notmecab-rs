@@ -96,11 +96,9 @@ pub struct LexerToken {
     pub cost : i64,
     /// Cost updated to include right-edge connection cost after parsing.
     pub real_cost : i64, 
-    
-    /// Location, in bytes, of the surface of this LexerToken in the string it was parsed from.
-    pub start : usize, 
-    /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one byte long)
-    pub end   : usize,
+
+    /// The range, in bytes, to which this token corresponds to in the original text.
+    pub range : Range<usize>,
 
     /// Origin of token. BOS and UNK are virtual origins ("beginning/ending-of-string" and "unknown", respectively). Normal means it came from the mecab dictionary.
     ///
@@ -557,8 +555,7 @@ impl<'a> From<&'a Token<'a>> for LexerToken
             pos : token.pos,
             cost : token.cost,
             real_cost : 0,
-            start : token.range.start,
-            end : token.range.end,
+            range : token.range.clone(),
             kind : token.kind,
             original_id : token.original_id,
             feature_offset : token.feature_offset
@@ -750,7 +747,7 @@ pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec
         
         for token in result.0
         {
-            let surface = &text[token.start..token.end];
+            let surface = &text[token.range.clone()];
             let feature = dict.read_feature_string(&token);
             lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
         }
