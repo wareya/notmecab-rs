@@ -111,6 +111,28 @@ pub struct LexerToken {
     pub feature_offset : u32,
 }
 
+impl LexerToken {
+    /// Returns the text to which this token corresponds to in the original text.
+    ///
+    /// The `whole_text` is the original string for which you've
+    /// called [`Dict::tokenize`] or [`Dict::tokenize_with_cache`].
+    pub fn get_text<'a>(&self, whole_text : &'a str) -> &'a str
+    {
+        &whole_text[self.range.clone()]
+    }
+
+    /// Returns a feature string corresponding to this token.
+    ///
+    /// Feature strings are dictionary-specific so unfortunately
+    /// you need to parse them yourself. They usually contain
+    /// things like the exact part-of-speech this token represents,
+    /// its reading, whenever it's conjugated or not, etc.
+    pub fn get_feature<'a>(&self, dict : &'a Dict) -> &'a str
+    {
+        dict.read_feature_string(self)
+    }
+}
+
 #[derive(Clone)]
 #[derive(Debug)]
 pub struct ParserToken<'text, 'dict> {
