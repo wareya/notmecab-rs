@@ -5,10 +5,36 @@ use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 use std::ops::Range;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use super::blob::*;
 use super::file::*;
 use super::FormatToken;
+
+type BuildNoopHasher = BuildHasherDefault<NoopHasher>;
+
+#[derive(Default)]
+struct NoopHasher(u64);
+
+impl Hasher for NoopHasher {
+    fn finish(&self) -> u64
+    {
+        self.0
+    }
+
+    fn write(&mut self, bytes : &[u8])
+    {
+        for &byte in bytes
+        {
+            self.0 = (self.0 << 8) ^ (byte as u64);
+        }
+    }
+
+    fn write_u64(&mut self, value : u64)
+    {
+        self.0 ^= value;
+    }
+}
 
 #[derive(Debug)]
 pub (crate) struct Link {
@@ -87,15 +113,11 @@ pub(crate) struct DictInfo {
 
 fn entries_to_tokens(entries : Vec<(String, u32)>) -> HashMap<String, DictInfo>
 {
-    let mut dictionary : HashMap<String, DictInfo> = HashMap::new();
-    for entry in entries
-    {
+    entries.into_iter().map(|entry| {
         let first : u32 = entry.1 / 0x100;
         let end   : u32 = (entry.1 % 0x100) + first;
-        dictionary.insert(entry.0, DictInfo{first, end});
-    }
-    
-    dictionary
+        (entry.0, DictInfo{first, end})
+    }).collect()
 }
 
 fn collect_links_into_map(links : Vec<Link>) -> HashMap<String, DictInfo>
@@ -108,7 +130,7 @@ fn collect_links_into_map(links : Vec<Link>) -> HashMap<String, DictInfo>
 pub (crate) struct DartDict {
     pub(crate) dict : HashMap<String, DictInfo>,
     pub(crate) tokens : Vec<FormatToken>,
-    pub(crate) contains_longer : HashSet<String>,
+    contains_longer : HashSet<u64, BuildNoopHasher>,
     pub(crate) left_contexts : u32,
     pub(crate) right_contexts : u32,
     feature_bytes_range : Range<usize>,
@@ -116,9 +138,9 @@ pub (crate) struct DartDict {
 }
 
 impl DartDict {
-    pub (crate) fn may_contain(&self, find : &str) -> bool
+    pub (crate) fn may_contain(&self, hash : u64) -> bool
     {
-        self.contains_longer.contains(find) || self.dict.contains_key(find)
+        self.contains_longer.contains(&hash)
     }
     pub (crate) fn dic_get<'a>(&'a self, find : &str) -> Option<&'a [FormatToken]>
     {
@@ -228,19 +250,14 @@ pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static st
     
     let dictionary = collect_links_into_map(links);
     
-    let mut contains_longer = HashSet::new();
-    
+    let mut contains_longer = HashSet::with_hasher(BuildNoopHasher::default());
     for entry in dictionary.keys()
     {
-        if !contains_longer.contains(entry)
+        let mut hasher = crate::hasher::Hasher::new();
+        for ch in entry.chars()
         {
-            for (i, _) in entry.char_indices()
-            {
-                if i > 0
-                {
-                    contains_longer.insert(entry[0..i].to_string());
-                }
-            }
+            hasher.write_u32(ch as u32);
+            contains_longer.insert(hasher.finish());
         }
     }
     
