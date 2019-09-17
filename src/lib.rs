@@ -23,6 +23,7 @@ mod dart;
 mod unkchar;
 mod userdict;
 mod pathing;
+mod hasher;
 
 use self::file::*;
 use self::dart::*;
@@ -351,10 +352,6 @@ impl Dict {
         let cost = &matrix.blob[offset..offset + 2];
         i16::from_le_bytes([cost[0], cost[1]])
     }
-    fn may_contain(&self, find : &str) -> bool
-    {
-        self.sys_dic.may_contain(find) || self.user_dic.as_ref().map(|x| x.may_contain(find)).unwrap_or_else(|| false)
-    }
     /// Set whether the 0x20 whitespace stripping behavior is enabled. Returns the previous value of the setting.
     ///
     /// Enabled by default.
@@ -487,30 +484,42 @@ fn generate_potential_tokens_at<'a>(dict : &'a Dict, text : &str, mut start : us
         };
 
     // find all tokens starting at this point in the string
+    let mut hasher = crate::hasher::Hasher::new();
+    hasher.write_u32(first_char as u32);
     loop
     {
         let substring : &str = &text[start..end];
-        if !dict.may_contain(&substring)
+        let hash = hasher.finish();
+        let mut any = false;
+        if dict.sys_dic.may_contain(hash)
+        {
+            any = true;
+            if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
+            {
+                let tokens = matching_tokens.into_iter()
+                    .map(|token| Token::new(token, rank, start..end, TokenType::Normal));
+                output.extend(tokens);
+            }
+        }
+        if dict.user_dic.as_ref().map(|x| x.may_contain(substring)).unwrap_or(false)
+        {
+            any = true;
+            if let Some(matching_tokens) = dict.user_dic.as_ref().and_then(|user_dic| user_dic.dic_get(&substring))
+            {
+                let tokens = matching_tokens.into_iter()
+                    .map(|token| Token::new(token, rank, start..end, TokenType::User));
+                output.extend(tokens);
+            }
+        }
+
+        if !any
         {
             break;
         }
 
-        if let Some(matching_tokens) = dict.sys_dic.dic_get(&substring)
-        {
-            let tokens = matching_tokens.into_iter()
-                .map(|token| Token::new(token, rank, start..end, TokenType::Normal));
-            output.extend(tokens);
-
-        }
-        if let Some(matching_tokens) = dict.user_dic.as_ref().and_then(|user_dic| user_dic.dic_get(&substring))
-        {
-            let tokens = matching_tokens.into_iter()
-                .map(|token| Token::new(token, rank, start..end, TokenType::User));
-            output.extend(tokens);
-        }
-
         if let Some((_, c)) = index_iter.next()
         {
+            hasher.write_u32(c as u32);
             end += c.len_utf8();
         }
         else
