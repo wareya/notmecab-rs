@@ -97,11 +97,9 @@ pub struct LexerToken {
     pub cost : i64,
     /// Cost updated to include right-edge connection cost after parsing.
     pub real_cost : i64, 
-    
-    /// Location, in bytes, of the surface of this LexerToken in the string it was parsed from.
-    pub start : usize, 
-    /// Corresponding ending location, in bytes. Exclusive. (i.e. when start+1 == end, the LexerToken's surface is one byte long)
-    pub end   : usize,
+
+    /// The range, in bytes, to which this token corresponds to in the original text.
+    pub range : Range<usize>,
 
     /// Origin of token. BOS and UNK are virtual origins ("beginning/ending-of-string" and "unknown", respectively). Normal means it came from the mecab dictionary.
     ///
@@ -114,32 +112,25 @@ pub struct LexerToken {
     pub feature_offset : u32,
 }
 
-#[derive(Clone)]
-#[derive(Debug)]
-pub struct ParserToken<'text, 'dict> {
-    /// Exact sequence of characters with which this token appeared in the string that was parsed.
-    pub surface : &'text str,
-    /// Description of this token's features.
+impl LexerToken {
+    /// Returns the text to which this token corresponds to in the original text.
     ///
-    /// The feature string contains almost all useful information, including things like part of speech, spelling, pronunciation, etc.
-    ///
-    /// The exact format of the feature string is dictionary-specific.
-    pub feature : &'dict str,
-    /// Unique identifier of what specific lexeme realization this is, from the mecab dictionary. changes between dictionary versions.
-    pub original_id : u32,
-    /// Origin of token.
-    pub kind : TokenType,
-}
-
-impl<'text, 'dict> ParserToken<'text, 'dict> {
-    fn build(surface : &'text str, feature : &'dict str, original_id : u32, kind : TokenType) -> Self
+    /// The `whole_text` is the original string for which you've
+    /// called [`Dict::tokenize`] or [`Dict::tokenize_with_cache`].
+    pub fn get_text<'a>(&self, whole_text : &'a str) -> &'a str
     {
-        ParserToken
-        { surface,
-          feature,
-          original_id,
-          kind
-        }
+        &whole_text[self.range.clone()]
+    }
+
+    /// Returns a feature string corresponding to this token.
+    ///
+    /// Feature strings are dictionary-specific so unfortunately
+    /// you need to parse them yourself. They usually contain
+    /// things like the exact part-of-speech this token represents,
+    /// its reading, whenever it's conjugated or not, etc.
+    pub fn get_feature<'a>(&self, dict : &'a Dict) -> &'a str
+    {
+        dict.read_feature_string(self)
     }
 }
 
@@ -169,6 +160,36 @@ impl EdgeInfo {
         }
     }
 }
+
+/// A cache for internal allocations.
+pub struct Cache {
+    pathing_cache: crate::pathing::Cache,
+    tokens: Vec<Token<'static>>
+}
+
+impl Cache {
+    pub fn new() -> Self
+    {
+        Cache {
+            pathing_cache: crate::pathing::Cache::new(),
+            tokens: Vec::new()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TokenizeError {
+    _dummy: ()
+}
+
+impl std::fmt::Display for TokenizeError {
+    fn fmt(&self, fmt : &mut std::fmt::Formatter) -> std::fmt::Result
+    {
+        write!(fmt, "failed to tokenize the input")
+    }
+}
+
+impl std::error::Error for TokenizeError {}
 
 pub struct Dict {
     sys_dic : DartDict,
@@ -324,6 +345,85 @@ impl Dict {
         
         matrix.fast_matrix_cache = new_fast_cache;
     }
+
+    /// Tokenizes a string by creating a lattice of possible tokens over it
+    /// and finding the lowest-cost path thought that lattice.
+    ///
+    /// See [`Dict::tokenize_with_cache`] for more details.
+    pub fn tokenize(&self, text : &str) -> Result<(Vec<LexerToken>, i64), TokenizeError>
+    {
+        let mut cache = Cache::new();
+        let mut tokens = Vec::new();
+        self.tokenize_with_cache(&mut cache, text, &mut tokens).map(|cost| (tokens, cost))
+    }
+
+    /// Tokenizes a string by creating a lattice of possible tokens over it
+    /// and finding the lowest-cost path thought that lattice.
+    ///
+    /// If successful the contents of `output` will be replaced with a list
+    /// of tokens and the total cost of the tokenization will be returned.
+    /// If unsuccessful the `output` will be cleared and a `None` will be returned.
+    ///
+    /// The dictionary itself defines what tokens exist, how they appear in
+    /// the string, their costs, and the costs of their possible connections.
+    ///
+    /// It's possible for multiple paths to tie for the lowest cost. It's not
+    /// defined which path is returned in that case.
+    ///
+    /// If you'll be calling this method multiple times you should reuse the
+    /// same `Cache` object across multiple invocations for increased efficiency.
+    pub fn tokenize_with_cache(&self, cache : &mut Cache, text : &str, output : &mut Vec<LexerToken>) -> Result<i64, TokenizeError>
+    {
+        fn take_memory<'a, 'b>(vec : &mut Vec<Token<'a>>) -> Vec<Token<'b>>
+        {
+            vec.clear();
+            // This is safe since we cleared the vector, so the inner lifetime doesn't matter.
+            let mut vec: &mut Vec<Token<'b>> = unsafe { std::mem::transmute(vec) };
+            let mut out = Vec::new();
+            std::mem::swap(&mut out, &mut vec);
+            out
+        }
+
+        let mut tokens = take_memory(&mut cache.tokens);
+        generate_potential_tokens(self, text, &mut tokens);
+
+        let (path, total_cost) = crate::pathing::shortest_path(
+            &mut cache.pathing_cache,
+            tokens.len(),
+            |index| tokens[index].rank as u32,
+            |index| tokens[index].range.end as u32,
+            |left, right| {
+                let right_token = &tokens[right];
+                let left_token = &tokens[left];
+                right_token.cost as i64 + self.access_matrix(left_token.right_context, right_token.left_context) as i64
+            },
+            |index| {
+                let right_token = &tokens[index];
+                right_token.cost as i64 + self.access_matrix(0, right_token.left_context) as i64
+            },
+            |index| self.access_matrix(tokens[index].right_context, 0) as i64
+        );
+
+        output.clear();
+        output.extend(path.iter().map(|&index| (&tokens[index as usize]).into()));
+
+        for i in 0..output.len()
+        {
+            let left_context = if i == 0 { 0 } else { output[i - 1].right_context };
+            let right_context = output[i].left_context;
+            let edge_cost =  self.access_matrix(left_context, right_context);
+            output[i].real_cost = output[i].cost + edge_cost as i64;
+        }
+
+        cache.tokens = take_memory(&mut tokens);
+        if path.is_empty()
+        {
+            return Err(TokenizeError { _dummy: () });
+        }
+
+        Ok(total_cost)
+    }
+
     #[allow(clippy::cast_lossless)]
     fn access_matrix(&self, left : u16, right : u16) -> i16
     {
@@ -445,8 +545,7 @@ impl<'a> From<&'a Token<'a>> for LexerToken
             pos : token.pos,
             cost : token.cost,
             real_cost : 0,
-            start : token.range.start,
-            end : token.range.end,
+            range : token.range.clone(),
             kind : token.kind,
             original_id : token.original_id,
             feature_offset : token.feature_offset
@@ -621,85 +720,6 @@ fn generate_potential_tokens<'a>(dict : &'a Dict, text : &str, output : &mut Vec
     }
 }
 
-/// Tokenizes a char slice by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of LexerTokens and the cost of the tokenization.
-///
-/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
-///
-/// Returns a vector listing the LexerTokens on the chosen path and the cost the path took. Cost can be negative.
-///
-/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse_to_lexertokens(dict : &Dict, text : &str) -> Option<(Vec<LexerToken>, i64)>
-{
-    let mut cache = crate::pathing::Cache::new();
-    let mut tokens = Vec::new();
-    generate_potential_tokens(dict, text, &mut tokens);
-
-    let (path, total_cost) = crate::pathing::shortest_path(
-        &mut cache,
-        tokens.len(),
-        |index| tokens[index].rank as u32,
-        |index| tokens[index].range.end as u32,
-        |left, right| {
-            let right_token = &tokens[right];
-            let left_token = &tokens[left];
-            right_token.cost as i64 + dict.access_matrix(left_token.right_context, right_token.left_context) as i64
-        },
-        |index| {
-            let right_token = &tokens[index];
-            right_token.cost as i64 + dict.access_matrix(0, right_token.left_context) as i64
-        },
-        |index| dict.access_matrix(tokens[index].right_context, 0) as i64
-    );
-
-    if path.is_empty()
-    {
-        return None;
-    }
-
-    let mut lexer_tokens : Vec<LexerToken> =
-        path.iter().map(|&index| (&tokens[index as usize]).into()).collect();
-
-    for i in 0..lexer_tokens.len()
-    {
-        let left_context = if i == 0 { 0 } else { lexer_tokens[i - 1].right_context };
-        let right_context = lexer_tokens[i].left_context;
-        let edge_cost =  dict.access_matrix(left_context, right_context);
-        lexer_tokens[i].real_cost = lexer_tokens[i].cost + edge_cost as i64;
-    }
-
-    Some((lexer_tokens, total_cost))
-}
-
-/// Tokenizes a string by creating a lattice of possible tokens over it and finding the lowest-cost path over that lattice. Returns a list of ParserToken and the cost of the tokenization.
-///
-/// The dictionary defines what tokens exist, how they appear in the string, their costs, and the costs of their possible connections.
-/// 
-/// Generates ParserTokens over the chosen path and returns a list of those ParserTokens and the cost the path took. Cost can be negative.
-/// 
-/// It's possible for multiple paths to tie for the lowest cost. It's not defined which path is returned in that case.
-pub fn parse<'dict, 'text>(dict : &'dict Dict, text : &'text str) -> Option<(Vec<ParserToken<'text, 'dict>>, i64)>
-{
-    let result = parse_to_lexertokens(dict, &text);
-    // convert result into callee-usable vector of parse tokens, tupled together with cost
-    if let Some(result) = result
-    {
-        let mut lexeme_events : Vec<ParserToken> = Vec::with_capacity(result.0.len());
-        
-        for token in result.0
-        {
-            let surface = &text[token.start..token.end];
-            let feature = dict.read_feature_string(&token);
-            lexeme_events.push(ParserToken::build(surface, feature, token.original_id, token.kind));
-        }
-        
-        Some((lexeme_events, result.1))
-    }
-    else
-    {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -709,7 +729,7 @@ mod tests {
     fn assert_implements_send<T>() where T: Send {}
     
     // concatenate surface forms of parsertoken stream, with given comma between tokens
-    fn tokenstream_to_string(stream : &Vec<ParserToken>, comma : &str) -> String
+    fn tokenstream_to_string(input : &str, stream : &Vec<LexerToken>, comma : &str) -> String
     {
         let mut ret = String::new();
         
@@ -720,7 +740,7 @@ mod tests {
             {
                 ret += comma;
             }
-            ret += &token.surface;
+            ret += token.get_text(input);
             first = false;
         }
         ret
@@ -729,13 +749,13 @@ mod tests {
     fn assert_parse(dict : &Dict, input : &str, truth : &str)
     {
         println!("testing parse...");
-        let result = parse(dict, input).unwrap();
+        let result = dict.tokenize(input).unwrap();
         
         for token in &result.0
         {
-            println!("{}", token.feature);
+            println!("{}", token.get_feature(dict));
         }
-        let split_up_string = tokenstream_to_string(&result.0, "|");
+        let split_up_string = tokenstream_to_string(input, &result.0, "|");
         println!("{}", split_up_string);
         
         assert_eq!(split_up_string, truth);
