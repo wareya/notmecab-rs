@@ -218,8 +218,8 @@ pub (crate) fn load_mecab_dart_file(blob : Blob) -> Result<DartDict, &'static st
     let feature_bytes_count = read_u32(dic_file)? as usize; // number of bytes used to store the feature string pile
     seek_rel_4(dic_file)?;
     
-    let encoding = read_nstr(dic_file, 0x20)?;
-    if encoding.to_lowercase() != "utf-8"
+    let encoding = read_nstr(dic_file, 0x20)?.to_lowercase();
+    if !(encoding == "utf-8" || encoding == "utf8")
     {
         return Err("only UTF-8 dictionaries are supported. stop using legacy encodings for infrastructure!");
     }
